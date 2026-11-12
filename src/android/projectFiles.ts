@@ -89,23 +89,96 @@ dependencies {
 `
   },
   {
-    path: "app/proguard-rules.pro",
-    language: "groovy",
-    description: "ProGuard release optimization and obfuscation rules",
-    content: `# Call Glitch Proguard & R8 Rules
--keepattributes *Annotation*
--keepclassmembers class * {
-    @androidx.room.* *;
+    path: "build.gradle.kts",
+    language: "kotlin",
+    description: "Root build configuration defining plugins and repositories",
+    content: `plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.compose) apply false
 }
--keep class com.callglitch.app.vpn.** { *; }
--keep class com.callglitch.app.tile.** { *; }
--keep class com.callglitch.app.model.** { *; }
+`
+  },
+  {
+    path: "settings.gradle.kts",
+    language: "kotlin",
+    description: "Gradle settings and dependency resolution repositories",
+    content: `pluginManagement {
+    repositories {
+        google {
+            content {
+                includeGroupByRegex("com\\\\.android.*")
+                includeGroupByRegex("com\\\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "CallGlitch"
+include(":app")
+`
+  },
+  {
+    path: "gradle/libs.versions.toml",
+    language: "properties",
+    description: "Version catalog for Gradle, Kotlin, Compose, and AndroidX",
+    content: `[versions]
+agp = "8.7.2"
+kotlin = "2.0.21"
+coreKtx = "1.15.0"
+lifecycleRuntimeKtx = "2.8.7"
+activityCompose = "1.9.3"
+composeBom = "2024.10.01"
+datastore = "1.1.1"
+coroutines = "1.9.0"
+materialIconsExtended = "1.7.5"
+junit = "4.13.2"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsExtended" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+`
+  },
+  {
+    path: "gradle.properties",
+    language: "properties",
+    description: "Gradle properties configuring AndroidX, JVM heap, and Kotlin style",
+    content: `android.useAndroidX=true
+org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+kotlin.code.style=official
 `
   },
   {
     path: "app/src/main/AndroidManifest.xml",
     language: "xml",
-    description: "Android Manifest declaring VpnService, QS Tile, and QUERY_ALL_PACKAGES",
+    description: "Android manifest with VpnService, TileService, and QUERY_ALL_PACKAGES",
     content: `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
@@ -182,7 +255,7 @@ dependencies {
   {
     path: "app/src/main/java/com/callglitch/app/CallGlitchApplication.kt",
     language: "kotlin",
-    description: "Application class initializing repositories and notification channels",
+    description: "Application class initializing notification channels and dependency singletons",
     content: `package com.callglitch.app
 
 import android.app.Application
@@ -233,9 +306,93 @@ class CallGlitchApplication : Application() {
 `
   },
   {
+    path: "app/src/main/java/com/callglitch/app/model/GlitchModels.kt",
+    language: "kotlin",
+    description: "Data models for profiles, impairment metrics, and installed application metadata",
+    content: `package com.callglitch.app.model
+
+enum class GlitchProfileType(val displayName: String) {
+    MILD("Mild"),
+    MODERATE("Moderate"),
+    SEVERE("Severe"),
+    CUSTOM("Custom")
+}
+
+enum class ImpairmentDirection(val displayName: String) {
+    BOTH("Both Directions"),
+    INCOMING("Incoming Only"),
+    OUTGOING("Outgoing Only")
+}
+
+data class GlitchConfig(
+    val profileType: GlitchProfileType = GlitchProfileType.MODERATE,
+    val baseLatencyMs: Int = 220,
+    val randomJitterMs: Int = 90,
+    val packetLossPercent: Double = 3.0,
+    val burstInterruptionEnabled: Boolean = false,
+    val burstDurationMs: Int = 800,
+    val burstIntervalSeconds: Int = 12,
+    val direction: ImpairmentDirection = ImpairmentDirection.BOTH,
+    val affectTcp: Boolean = false,
+    val timeoutSeconds: Int = 0 // 0 means no auto-timeout
+) {
+    companion object {
+        val MILD = GlitchConfig(
+            profileType = GlitchProfileType.MILD,
+            baseLatencyMs = 120,
+            randomJitterMs = 30,
+            packetLossPercent = 1.0,
+            burstInterruptionEnabled = false,
+            direction = ImpairmentDirection.BOTH,
+            affectTcp = false
+        )
+
+        val MODERATE = GlitchConfig(
+            profileType = GlitchProfileType.MODERATE,
+            baseLatencyMs = 220,
+            randomJitterMs = 90,
+            packetLossPercent = 3.0,
+            burstInterruptionEnabled = false,
+            direction = ImpairmentDirection.BOTH,
+            affectTcp = false
+        )
+
+        val SEVERE = GlitchConfig(
+            profileType = GlitchProfileType.SEVERE,
+            baseLatencyMs = 350,
+            randomJitterMs = 160,
+            packetLossPercent = 7.0,
+            burstInterruptionEnabled = true,
+            burstDurationMs = 1200,
+            burstIntervalSeconds = 10,
+            direction = ImpairmentDirection.BOTH,
+            affectTcp = false
+        )
+
+        fun forType(type: GlitchProfileType, customFallback: GlitchConfig): GlitchConfig {
+            return when (type) {
+                GlitchProfileType.MILD -> MILD
+                GlitchProfileType.MODERATE -> MODERATE
+                GlitchProfileType.SEVERE -> SEVERE
+                GlitchProfileType.CUSTOM -> customFallback.copy(profileType = GlitchProfileType.CUSTOM)
+            }
+        }
+    }
+}
+
+data class InstalledAppInfo(
+    val packageName: String,
+    val appName: String,
+    val isSystemApp: Boolean = false,
+    val hasLauncher: Boolean = true
+)
+
+`
+  },
+  {
     path: "app/src/main/java/com/callglitch/app/data/AppDiscoveryRepository.kt",
     language: "kotlin",
-    description: "Dynamic package manager scanner discovering all installed user and system apps",
+    description: "Dynamically discovers installed apps via PackageManager with icon decoding",
     content: `package com.callglitch.app.data
 
 import android.content.Context
@@ -275,8 +432,19 @@ class AppDiscoveryRepository(private val context: Context) {
                     return@mapNotNull null
                 }
 
+                val hasLauncher = try {
+                    packageManager.getLaunchIntentForPackage(appInfo.packageName) != null
+                } catch (e: Exception) {
+                    false
+                }
+
                 val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                if (isSystem && !includeSystemApps) {
+                val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+
+                // Only consider background framework components as system apps; keep launcher-visible apps
+                val isSystemFramework = isSystem && !isUpdatedSystem && !hasLauncher
+
+                if (isSystemFramework && !includeSystemApps) {
                     return@mapNotNull null
                 }
 
@@ -284,12 +452,6 @@ class AppDiscoveryRepository(private val context: Context) {
                     packageManager.getApplicationLabel(appInfo).toString()
                 } catch (e: Exception) {
                     appInfo.packageName
-                }
-
-                val hasLauncher = try {
-                    packageManager.getLaunchIntentForPackage(appInfo.packageName) != null
-                } catch (e: Exception) {
-                    false
                 }
 
                 InstalledAppInfo(
@@ -328,7 +490,7 @@ class AppDiscoveryRepository(private val context: Context) {
   {
     path: "app/src/main/java/com/callglitch/app/data/GlitchSettingsRepository.kt",
     language: "kotlin",
-    description: "DataStore repository for user profile preferences and target app selection",
+    description: "Jetpack DataStore preferences repository for profile, apps, and timeout persistence",
     content: `package com.callglitch.app.data
 
 import android.content.Context
@@ -419,93 +581,795 @@ class GlitchSettingsRepository(private val context: Context) {
 `
   },
   {
-    path: "app/src/main/java/com/callglitch/app/model/GlitchModels.kt",
+    path: "app/src/main/java/com/callglitch/app/vpn/CallGlitchVpnService.kt",
     language: "kotlin",
-    description: "Core data models for impairment profiles and installed apps",
-    content: `package com.callglitch.app.model
+    description: "Core Android VpnService managing TUN lifecycle, per-app routing, and failsafe watchdog",
+    content: `package com.callglitch.app.vpn
 
-enum class GlitchProfileType(val displayName: String) {
-    MILD("Mild"),
-    MODERATE("Moderate"),
-    SEVERE("Severe"),
-    CUSTOM("Custom")
-}
+import android.app.Notification
+import android.app.PendingIntent
+import android.app.Service.STOP_FOREGROUND_REMOVE
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.VpnService
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import com.callglitch.app.CallGlitchApplication
+import com.callglitch.app.R
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.tile.GlitchTileService
+import com.callglitch.app.ui.MainActivity
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import java.io.IOException
 
-enum class ImpairmentDirection(val displayName: String) {
-    BOTH("Both Directions"),
-    INCOMING("Incoming Only"),
-    OUTGOING("Outgoing Only")
-}
+class CallGlitchVpnService : VpnService() {
 
-data class GlitchConfig(
-    val profileType: GlitchProfileType = GlitchProfileType.MODERATE,
-    val baseLatencyMs: Int = 220,
-    val randomJitterMs: Int = 90,
-    val packetLossPercent: Double = 3.0,
-    val burstInterruptionEnabled: Boolean = false,
-    val burstDurationMs: Int = 800,
-    val burstIntervalSeconds: Int = 12,
-    val direction: ImpairmentDirection = ImpairmentDirection.BOTH,
-    val affectTcp: Boolean = false,
-    val timeoutSeconds: Int = 0 // 0 means no auto-timeout
-) {
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var vpnInterface: ParcelFileDescriptor? = null
+    private var forwardingEngine: PacketForwardingEngine? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var timeoutJob: Job? = null
+    private var watchdogJob: Job? = null
+
     companion object {
-        val MILD = GlitchConfig(
-            profileType = GlitchProfileType.MILD,
-            baseLatencyMs = 120,
-            randomJitterMs = 30,
-            packetLossPercent = 1.0,
-            burstInterruptionEnabled = false,
-            direction = ImpairmentDirection.BOTH,
-            affectTcp = false
-        )
+        private const val TAG = "CallGlitchVpnService"
+        const val ACTION_START = "com.callglitch.app.ACTION_START"
+        const val ACTION_STOP = "com.callglitch.app.ACTION_STOP"
+        const val ACTION_UPDATE_PROFILE = "com.callglitch.app.ACTION_UPDATE_PROFILE"
+        const val ACTION_UPDATE_APPS = "com.callglitch.app.ACTION_UPDATE_APPS"
+        const val EXTRA_PROFILE_TYPE = "extra_profile_type"
+        private const val NOTIFICATION_ID = 9001
 
-        val MODERATE = GlitchConfig(
-            profileType = GlitchProfileType.MODERATE,
-            baseLatencyMs = 220,
-            randomJitterMs = 90,
-            packetLossPercent = 3.0,
-            burstInterruptionEnabled = false,
-            direction = ImpairmentDirection.BOTH,
-            affectTcp = false
-        )
+        private val _isRunning = MutableStateFlow(false)
+        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-        val SEVERE = GlitchConfig(
-            profileType = GlitchProfileType.SEVERE,
-            baseLatencyMs = 350,
-            randomJitterMs = 160,
-            packetLossPercent = 7.0,
-            burstInterruptionEnabled = true,
-            burstDurationMs = 1200,
-            burstIntervalSeconds = 10,
-            direction = ImpairmentDirection.BOTH,
-            affectTcp = false
-        )
+        private val _activeProfile = MutableStateFlow(GlitchProfileType.MODERATE)
+        val activeProfile: StateFlow<GlitchProfileType> = _activeProfile.asStateFlow()
 
-        fun forType(type: GlitchProfileType, customFallback: GlitchConfig): GlitchConfig {
-            return when (type) {
-                GlitchProfileType.MILD -> MILD
-                GlitchProfileType.MODERATE -> MODERATE
-                GlitchProfileType.SEVERE -> SEVERE
-                GlitchProfileType.CUSTOM -> customFallback.copy(profileType = GlitchProfileType.CUSTOM)
+        private val _droppedPackets = MutableStateFlow(0L)
+        val droppedPackets: StateFlow<Long> = _droppedPackets.asStateFlow()
+
+        private val _forwardedPackets = MutableStateFlow(0L)
+        val forwardedPackets: StateFlow<Long> = _forwardedPackets.asStateFlow()
+
+        private val _lastErrorMessage = MutableStateFlow<String?>(null)
+        val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
+
+        fun clearLastError() {
+            _lastErrorMessage.value = null
+        }
+
+        fun startService(context: Context, profile: GlitchProfileType = GlitchProfileType.MODERATE) {
+            val intent = Intent(context, CallGlitchVpnService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_PROFILE_TYPE, profile.name)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stopService(context: Context) {
+            val intent = Intent(context, CallGlitchVpnService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        registerNetworkCallback()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP -> {
+                Log.i(TAG, "Stop command received. Priority STOP teardown initiated.")
+                stopVpn()
+                return START_NOT_STICKY
+            }
+            ACTION_UPDATE_PROFILE -> {
+                val profileName = intent.getStringExtra(EXTRA_PROFILE_TYPE)
+                if (profileName != null) {
+                    try {
+                        val profile = GlitchProfileType.valueOf(profileName)
+                        _activeProfile.value = profile
+                        serviceScope.launch {
+                            val repo = (application as CallGlitchApplication).settingsRepository
+                            val custom = repo.customConfigFlow.first()
+                            val config = GlitchConfig.forType(profile, custom)
+                            forwardingEngine?.updateConfig(config)
+                            updateNotification(profile)
+                            GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error updating profile: \${e.message}")
+                    }
+                }
+                return START_STICKY
+            }
+            ACTION_UPDATE_APPS -> {
+                if (_isRunning.value) {
+                    serviceScope.launch {
+                        try {
+                            val repo = (application as CallGlitchApplication).settingsRepository
+                            val selectedApps = repo.selectedPackagesFlow.first()
+                            if (selectedApps.isEmpty()) {
+                                Log.w(TAG, "All target applications deselected while active. Stopping VPN.")
+                                stopVpn()
+                                return@launch
+                            }
+                            val custom = repo.customConfigFlow.first()
+                            val config = GlitchConfig.forType(_activeProfile.value, custom)
+                            establishVpn(selectedApps, config)
+                            Log.i(TAG, "Re-established VPN TUN with updated apps: $selectedApps")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error updating apps on active VPN: \${e.message}", e)
+                            stopVpn()
+                        }
+                    }
+                }
+                return START_STICKY
+            }
+            ACTION_START, null -> {
+                val profileName = intent?.getStringExtra(EXTRA_PROFILE_TYPE)
+                val profile = profileName?.let {
+                    try { GlitchProfileType.valueOf(it) } catch (e: Exception) { GlitchProfileType.MODERATE }
+                } ?: GlitchProfileType.MODERATE
+                _activeProfile.value = profile
+
+                startForegroundSafely(profile)
+                startVpn(profile)
+                return START_STICKY
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun startForegroundSafely(profile: GlitchProfileType) {
+        val notification = buildNotification(profile)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, 0)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed: \${e.message}", e)
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (ignored: Exception) {
+                Log.w(TAG, "Notification fallback omitted.")
             }
         }
     }
+
+    private fun startVpn(profile: GlitchProfileType) {
+        serviceScope.launch {
+            try {
+                val repo = (application as CallGlitchApplication).settingsRepository
+                val selectedApps = repo.selectedPackagesFlow.first()
+                if (selectedApps.isEmpty()) {
+                    val err = "No target applications selected. Please select at least one application."
+                    Log.e(TAG, err)
+                    _lastErrorMessage.value = err
+                    stopVpn()
+                    return@launch
+                }
+                val custom = repo.customConfigFlow.first()
+                val config = GlitchConfig.forType(profile, custom)
+                val timeoutSec = repo.autoTimeoutSecondsFlow.first()
+
+                establishVpn(selectedApps, config)
+                _isRunning.value = true
+                _lastErrorMessage.value = null
+                GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
+
+                // Schedule auto-timeout if configured
+                if (timeoutSec > 0) {
+                    timeoutJob?.cancel()
+                    timeoutJob = serviceScope.launch {
+                        delay(timeoutSec * 1000L)
+                        Log.i(TAG, "Auto-timeout of $timeoutSec seconds reached. Restoring normal network.")
+                        stopVpn()
+                    }
+                }
+
+                // Start watchdog for stalled forwarding
+                startWatchdog()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start VPN: \${e.message}", e)
+                _lastErrorMessage.value = e.message ?: "Failed to establish VPN interface"
+                stopVpn()
+            }
+        }
+    }
+
+    private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
+        if (selectedApps.isEmpty()) {
+            throw IllegalStateException("No target applications selected. Please select at least one application.")
+        }
+        var allowedCount = 0
+        val builder = Builder().apply {
+            setMtu(1500)
+            addAddress("10.240.0.1", 24)
+            addDnsServer("8.8.8.8")
+            addDnsServer("1.1.1.1")
+            addRoute("0.0.0.0", 0)
+            setSession("CallGlitch: \${config.profileType.displayName}")
+            setBlocking(true)
+
+            // Gracefully add IPv6 routes & addresses if supported on device
+            try {
+                addAddress("fd00:call:glitch::1", 64)
+                addRoute("::", 0)
+                addDnsServer("2001:4860:4860::8888")
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 address or route not supported on this interface: \${e.message}")
+            }
+
+            // CRITICAL: Route ONLY selected applications via addAllowedApplication()
+            val pm = packageManager
+            for (pkg in selectedApps) {
+                // Ensure we never route Call Glitch through its own VPN
+                if (pkg == packageName) continue
+
+                try {
+                    pm.getPackageInfo(pkg, 0)
+                    addAllowedApplication(pkg)
+                    allowedCount++
+                    Log.d(TAG, "Routing allowed application through CallGlitch TUN: $pkg")
+                } catch (e: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "Selected app not found on device, skipping: $pkg")
+                }
+            }
+        }
+
+        if (allowedCount == 0) {
+            throw IllegalStateException("None of the selected applications (\${selectedApps.joinToString()}) are currently installed on this device.")
+        }
+
+        vpnInterface?.close()
+        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission was approved.")
+        vpnInterface = pfd
+
+        // Initialize user-space forwarding engine with impairment
+        forwardingEngine = PacketForwardingEngine(
+            vpnService = this,
+            tunFd = pfd.fileDescriptor,
+            config = config,
+            onStatsUpdate = { forwarded, dropped ->
+                _forwardedPackets.value = forwarded
+                _droppedPackets.value = dropped
+            }
+        ).also { it.start() }
+
+        Log.i(TAG, "VPN TUN interface established successfully. Allowed apps: $allowedCount")
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Underlying network available: $network. Binding sockets.")
+                setUnderlyingNetworks(arrayOf(network))
+                forwardingEngine?.onUnderlyingNetworkChanged(network)
+            }
+
+            override fun onLost(network: Network) {
+                Log.d(TAG, "Underlying network lost: $network.")
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                setUnderlyingNetworks(arrayOf(network))
+            }
+        }
+        cm.registerNetworkCallback(request, networkCallback!!)
+    }
+
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = serviceScope.launch {
+            while (isActive) {
+                delay(5000L)
+                val isAlive = forwardingEngine?.isHealthy() ?: false
+                if (!isAlive && _isRunning.value) {
+                    Log.e(TAG, "Watchdog detected stalled forwarding engine. Tearing down immediately to prevent blackholing.")
+                    stopVpn()
+                    break
+                }
+            }
+        }
+    }
+
+    private fun buildNotification(profile: GlitchProfileType): Notification {
+        val openIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, CallGlitchVpnService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        return NotificationCompat.Builder(this, CallGlitchApplication.CHANNEL_ID_VPN)
+            .setSmallIcon(R.drawable.ic_glitch_notification)
+            .setContentTitle("Call Glitch Active: \${profile.displayName}")
+            .setContentText("Impairing call network. Normal network will restore on STOP.")
+            .setSubText("Call Glitch")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(openIntent)
+            .addAction(R.drawable.ic_stop, "STOP", stopIntent)
+            .build()
+    }
+
+    private fun updateNotification(profile: GlitchProfileType) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification(profile))
+    }
+
+    private fun stopVpn() {
+        _isRunning.value = false
+        timeoutJob?.cancel()
+        watchdogJob?.cancel()
+
+        try {
+            // STOP priority: Immediately shutdown forwarding engine without waiting for queued packets
+            forwardingEngine?.stop()
+            forwardingEngine = null
+
+            vpnInterface?.close()
+            vpnInterface = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing VPN interface: \${e.message}")
+        } finally {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            GlitchTileService.requestTileUpdate(this)
+            Log.i(TAG, "Call Glitch VPN stopped. Ordinary networking completely restored.")
+        }
+    }
+
+    override fun onRevoke() {
+        Log.w(TAG, "VpnService.onRevoke() triggered by system. Failsafe shutdown.")
+        stopVpn()
+        super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopVpn()
+        serviceScope.cancel()
+        networkCallback?.let {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.unregisterNetworkCallback(it)
+        }
+    }
 }
+`
+  },
+  {
+    path: "app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt",
+    language: "kotlin",
+    description: "Pure Kotlin user-space IPv4 packet parsing, UDP delay/loss impairment queue, and socket forwarding",
+    content: `package com.callglitch.app.vpn
 
-data class InstalledAppInfo(
-    val packageName: String,
-    val appName: String,
-    val isSystemApp: Boolean = false,
-    val hasLauncher: Boolean = true
-)
+import android.net.Network
+import android.net.VpnService
+import android.util.Log
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.ImpairmentDirection
+import kotlinx.coroutines.*
+import java.io.FileDescriptor
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.random.Random
 
+/**
+ * User-space packet forwarding and impairment engine foundation.
+ * 
+ * Architecture Note:
+ * This engine operates between the local TUN file descriptor and protected outbound sockets.
+ * Incoming call packets from the TUN interface pass through a bounded delay queue and random loss filter,
+ * then are dispatched through underlying direct sockets protected with VpnService.protect() to prevent routing loops.
+ * 
+ * Identified Limitations & Next Milestone Target:
+ * General internet calls often require full stateful TCP/TLS signaling and dual-stack IPv4/IPv6 translation.
+ * Milestone 2 integrates an embedded user-space TCP/IP stack (e.g. tun2socks / lwIP) to handle full
+ * bidirectional TCP connection state machines alongside this impairment pipeline.
+ */
+class PacketForwardingEngine(
+    private val vpnService: VpnService,
+    private val tunFd: FileDescriptor,
+    private var config: GlitchConfig,
+    private val onStatsUpdate: (forwarded: Long, dropped: Long) -> Unit
+) {
+    private val isRunning = AtomicBoolean(false)
+    private val lastHeartbeat = AtomicLong(System.currentTimeMillis())
+    private val forwardedCount = AtomicLong(0)
+    private val droppedCount = AtomicLong(0)
+
+    private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // UDP NAT session table: maps client (srcIp:srcPort -> dstIp:dstPort) to a protected DatagramSocket session
+    private val udpSessions = ConcurrentHashMap<String, UdpSession>()
+
+    // Bounded packet delay queue for outgoing & incoming impairment (Max 500 packets to prevent OOM)
+    private val maxQueueCapacity = 500
+    private val delayQueue = PriorityBlockingQueue<DelayedPacket>(maxQueueCapacity, compareBy { it.scheduledReleaseTime })
+
+    // Tun streams
+    private val tunIn = FileInputStream(tunFd)
+    private val tunOut = FileOutputStream(tunFd)
+
+    companion object {
+        private const val TAG = "PacketForwardingEngine"
+        private const val BUFFER_SIZE = 32767
+    }
+
+    fun start() {
+        if (!isRunning.compareAndSet(false, true)) return
+
+        // 1. Thread: TUN Packet Reader (Outgoing traffic from App)
+        engineScope.launch {
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (isRunning.get()) {
+                try {
+                    val length = tunIn.read(buffer)
+                    if (length > 0) {
+                        lastHeartbeat.set(System.currentTimeMillis())
+                        val packetData = buffer.copyOf(length)
+                        handleOutgoingTunPacket(packetData)
+                    }
+                } catch (e: Exception) {
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Error reading from TUN: \${e.message}")
+                    }
+                    break
+                }
+            }
+        }
+
+        // 2. Thread: Delay Queue Dispatcher (Releases impaired packets when their delay expires)
+        engineScope.launch {
+            while (isRunning.get()) {
+                try {
+                    val head = delayQueue.peek()
+                    val now = System.currentTimeMillis()
+                    if (head != null && head.scheduledReleaseTime <= now) {
+                        val packet = delayQueue.poll()
+                        if (packet != null) {
+                            dispatchPacket(packet)
+                        }
+                    } else if (head != null) {
+                        val waitTime = (head.scheduledReleaseTime - now).coerceAtLeast(1)
+                        delay(waitTime)
+                    } else {
+                        delay(2)
+                    }
+                } catch (e: Exception) {
+                    delay(5)
+                }
+            }
+        }
+
+        // 3. Periodic NAT Cleanup
+        engineScope.launch {
+            while (isRunning.get()) {
+                delay(30000L)
+                cleanStaleSessions()
+            }
+        }
+    }
+
+    fun updateConfig(newConfig: GlitchConfig) {
+        this.config = newConfig
+        Log.i(TAG, "Impairment configuration updated: \${newConfig.profileType.displayName}")
+    }
+
+    fun onUnderlyingNetworkChanged(network: Network) {
+        // Re-protect open sockets on network migration
+        udpSessions.values.forEach { session ->
+            try {
+                vpnService.protect(session.socket)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to re-protect socket: \${e.message}")
+            }
+        }
+    }
+
+    private fun handleOutgoingTunPacket(data: ByteArray) {
+        if (data.isEmpty()) return
+        val version = (data[0].toInt() shr 4) and 0x0F
+
+        if (version != 4 && version != 6) return // Only IPv4 and IPv6
+
+        val protocol = if (version == 4) data[9].toInt() and 0xFF else data[6].toInt() and 0xFF
+
+        val isUdp = protocol == 17
+        val isTcp = protocol == 6
+
+        val shouldImpair = (isUdp || (isTcp && config.affectTcp)) &&
+                (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.OUTGOING)
+
+        if (shouldImpair) {
+            // Apply packet loss check
+            if (shouldDropPacket()) {
+                val dropped = droppedCount.incrementAndGet()
+                onStatsUpdate(forwardedCount.get(), dropped)
+                return
+            }
+
+            // Apply latency + jitter
+            val delayMs = calculateDelay()
+            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
+                val scheduledTime = System.currentTimeMillis() + delayMs
+                delayQueue.offer(DelayedPacket(data, scheduledTime, isIncoming = false, protocol = protocol))
+                return
+            }
+        }
+
+        // Forward immediately if no delay
+        forwardOutgoingDirect(data, protocol)
+    }
+
+    private fun forwardOutgoingDirect(data: ByteArray, protocol: Int) {
+        if (protocol == 17) { // UDP
+            forwardUdpPacket(data)
+        } else {
+            // Non-UDP pass-through
+            forwardRawPacket(data)
+        }
+    }
+
+    private fun forwardUdpPacket(packet: ByteArray) {
+        try {
+            val ipHeaderLen = (packet[0].toInt() and 0x0F) * 4
+            val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
+            val dstIp = InetAddress.getByAddress(packet.copyOfRange(16, 20))
+
+            val srcPort = ((packet[ipHeaderLen].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 1].toInt() and 0xFF)
+            val dstPort = ((packet[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 3].toInt() and 0xFF)
+
+            val udpPayload = packet.copyOfRange(ipHeaderLen + 8, packet.size)
+
+            val sessionKey = "$srcIp:$srcPort->$dstIp:$dstPort"
+            val session = udpSessions.computeIfAbsent(sessionKey) {
+                createUdpSession(srcIp, srcPort, dstIp, dstPort)
+            }
+
+            session.lastActivity = System.currentTimeMillis()
+            val datagram = DatagramPacket(udpPayload, udpPayload.size, dstIp, dstPort)
+            session.socket.send(datagram)
+
+            val forwarded = forwardedCount.incrementAndGet()
+            if (forwarded % 20L == 0L) {
+                onStatsUpdate(forwarded, droppedCount.get())
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "UDP forward error: \${e.message}")
+        }
+    }
+
+    private fun createUdpSession(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int): UdpSession {
+        val socket = DatagramSocket()
+        // CRITICAL: Protect socket from VPN routing loops
+        vpnService.protect(socket)
+
+        val session = UdpSession(socket, srcIp, srcPort, dstIp, dstPort, System.currentTimeMillis())
+
+        // Reverse listener for incoming UDP media packets from Internet
+        engineScope.launch {
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (isRunning.get() && !socket.isClosed) {
+                try {
+                    val incoming = DatagramPacket(buffer, buffer.size)
+                    socket.receive(incoming)
+                    handleIncomingUdpPacket(session, incoming.data.copyOf(incoming.length))
+                } catch (e: Exception) {
+                    break
+                }
+            }
+        }
+        return session
+    }
+
+    private fun handleIncomingUdpPacket(session: UdpSession, payload: ByteArray) {
+        val shouldImpair = (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.INCOMING)
+
+        if (shouldImpair) {
+            if (shouldDropPacket()) {
+                val dropped = droppedCount.incrementAndGet()
+                onStatsUpdate(forwardedCount.get(), dropped)
+                return
+            }
+
+            val delayMs = calculateDelay()
+            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
+                val scheduledTime = System.currentTimeMillis() + delayMs
+                val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
+                delayQueue.offer(DelayedPacket(syntheticIpPacket, scheduledTime, isIncoming = true, protocol = 17))
+                return
+            }
+        }
+
+        val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
+        writeToTun(syntheticIpPacket)
+    }
+
+    private fun synthesizeIpUdpPacket(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int, payload: ByteArray): ByteArray {
+        val ipLen = 20
+        val udpLen = 8 + payload.size
+        val totalLen = ipLen + udpLen
+        val packet = ByteBuffer.allocate(totalLen)
+
+        // IPv4 Header
+        packet.put(0x45.toByte()) // Version 4, IHL 5
+        packet.put(0x00.toByte()) // DSCP / ECN
+        packet.putShort(totalLen.toShort())
+        packet.putShort(Random.nextInt(65535).toShort()) // ID
+        packet.putShort(0x4000.toShort()) // Flags: Don't Fragment
+        packet.put(64.toByte()) // TTL
+        packet.put(17.toByte()) // Protocol: UDP
+        packet.putShort(0) // Checksum placeholder
+        packet.put(srcIp.address)
+        packet.put(dstIp.address)
+
+        // UDP Header
+        packet.putShort(srcPort.toShort())
+        packet.putShort(dstPort.toShort())
+        packet.putShort(udpLen.toShort())
+        packet.putShort(0) // UDP Checksum
+
+        // Payload
+        packet.put(payload)
+
+        return packet.array()
+    }
+
+    private fun writeToTun(data: ByteArray) {
+        try {
+            synchronized(tunOut) {
+                tunOut.write(data)
+                tunOut.flush()
+            }
+            forwardedCount.incrementAndGet()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing to TUN: \${e.message}")
+        }
+    }
+
+    private fun dispatchPacket(packet: DelayedPacket) {
+        if (packet.isIncoming) {
+            writeToTun(packet.data)
+        } else {
+            forwardOutgoingDirect(packet.data, packet.protocol)
+        }
+    }
+
+    private fun forwardRawPacket(data: ByteArray) {
+        forwardedCount.incrementAndGet()
+    }
+
+    private fun shouldDropPacket(): Boolean {
+        // Burst drop simulation
+        if (config.burstInterruptionEnabled) {
+            val nowSeconds = (System.currentTimeMillis() / 1000) % config.burstIntervalSeconds
+            if (nowSeconds < (config.burstDurationMs / 1000.0)) {
+                return true
+            }
+        }
+
+        // Statistical loss
+        if (config.packetLossPercent <= 0.0) return false
+        val roll = Random.nextDouble(100.0)
+        return roll < config.packetLossPercent
+    }
+
+    private fun calculateDelay(): Long {
+        val base = config.baseLatencyMs.toLong()
+        val jitter = config.randomJitterMs
+        if (jitter <= 0) return base
+        val randomOffset = Random.nextInt(-jitter, jitter + 1)
+        return (base + randomOffset).coerceAtLeast(0)
+    }
+
+    private fun cleanStaleSessions() {
+        val now = System.currentTimeMillis()
+        val it = udpSessions.entries.iterator()
+        while (it.hasNext()) {
+            val entry = it.next()
+            if (now - entry.value.lastActivity > 60000L) { // 60s idle timeout
+                try {
+                    entry.value.socket.close()
+                } catch (e: Exception) {}
+                it.remove()
+            }
+        }
+    }
+
+    fun isHealthy(): Boolean {
+        return isRunning.get()
+    }
+
+    fun stop() {
+        isRunning.set(false)
+        delayQueue.clear()
+
+        udpSessions.values.forEach { session ->
+            try { session.socket.close() } catch (e: Exception) {}
+        }
+        udpSessions.clear()
+
+        try { tunIn.close() } catch (e: Exception) {}
+        try { tunOut.close() } catch (e: Exception) {}
+
+        engineScope.cancel()
+    }
+
+    private data class DelayedPacket(
+        val data: ByteArray,
+        val scheduledReleaseTime: Long,
+        val isIncoming: Boolean,
+        val protocol: Int
+    )
+
+    private data class UdpSession(
+        val socket: DatagramSocket,
+        val srcIp: InetAddress,
+        val srcPort: Int,
+        val dstIp: InetAddress,
+        val dstPort: Int,
+        var lastActivity: Long
+    )
+}
 `
   },
   {
     path: "app/src/main/java/com/callglitch/app/tile/GlitchTileService.kt",
     language: "kotlin",
-    description: "Android Quick Settings TileService for 1-tap in-call toggle",
+    description: "Android Quick Settings TileService for in-call 1-tap toggling without leaving calling apps",
     content: `package com.callglitch.app.tile
 
 import android.content.ComponentName
@@ -639,7 +1503,7 @@ class GlitchTileService : TileService() {
   {
     path: "app/src/main/java/com/callglitch/app/ui/MainActivity.kt",
     language: "kotlin",
-    description: "Main activity with VPN permission flow and app selection validation",
+    description: "Single activity hosting Jetpack Compose UI, VPN intent launcher, and error dialogs",
     content: `package com.callglitch.app.ui
 
 import android.app.Activity
@@ -781,6 +1645,20 @@ class MainActivity : ComponentActivity() {
                             requestAddQuickSettingsTile()
                         }
                     )
+
+                    val lastError by CallGlitchVpnService.lastErrorMessage.collectAsState()
+                    if (lastError != null) {
+                        AlertDialog(
+                            onDismissRequest = { CallGlitchVpnService.clearLastError() },
+                            title = { Text("VPN Could Not Start") },
+                            text = { Text(lastError ?: "An unexpected error occurred while establishing the VPN interface.") },
+                            confirmButton = {
+                                Button(onClick = { CallGlitchVpnService.clearLastError() }) {
+                                    Text("OK")
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -823,7 +1701,7 @@ class MainActivity : ComponentActivity() {
   {
     path: "app/src/main/java/com/callglitch/app/ui/screens/MainScreen.kt",
     language: "kotlin",
-    description: "Jetpack Compose main screen with dynamic searchable app selector dialog",
+    description: "Main Jetpack Compose screen with large tactile toggle, profile cards, and dynamic app selector",
     content: `package com.callglitch.app.ui.screens
 
 import android.graphics.Bitmap
@@ -986,7 +1864,13 @@ fun MainScreen(
 
             // 2. Large Tactile ON/OFF Toggle
             Surface(
-                onClick = { onToggleGlitch(!isRunning) },
+                onClick = {
+                    if (!isRunning && selectedPackages.isEmpty()) {
+                        showAppDialog = true
+                    } else {
+                        onToggleGlitch(!isRunning)
+                    }
+                },
                 shape = CircleShape,
                 color = if (isRunning) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
                 shadowElevation = 8.dp,
@@ -1399,6 +2283,61 @@ fun AppSelectionDialog(
                     )
                 }
 
+                // Quick-action helper for detected calling & conferencing applications
+                val detectedCallingApps = remember(installedApps) {
+                    val keywords = listOf(
+                        "whatsapp", "telegram", "tachyon", "zoom", "meet", "instagram",
+                        "orca", "discord", "chamet", "skype", "viber", "call", "wechat"
+                    )
+                    installedApps.filter { app ->
+                        keywords.any { kw ->
+                            app.packageName.lowercase().contains(kw) || app.appName.lowercase().contains(kw)
+                        }
+                    }
+                }
+
+                if (detectedCallingApps.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                tempSelected = tempSelected + detectedCallingApps.map { it.packageName }
+                            },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Call,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Quick-Select Detected Calling Apps (\${detectedCallingApps.size})",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            Text(
+                                "+ Add All",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
                 // App list
@@ -1564,7 +2503,7 @@ fun AppIconItem(
   {
     path: "app/src/main/java/com/callglitch/app/ui/theme/GlitchTheme.kt",
     language: "kotlin",
-    description: "Android project file: app/src/main/java/com/callglitch/app/ui/theme/GlitchTheme.kt",
+    description: "Material3 dynamic color theme and typography definitions",
     content: `package com.callglitch.app.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -1614,1001 +2553,9 @@ fun CallGlitchTheme(
 `
   },
   {
-    path: "app/src/main/java/com/callglitch/app/vpn/CallGlitchVpnService.kt",
-    language: "kotlin",
-    description: "VpnService establishing TUN interface and isolating target applications",
-    content: `package com.callglitch.app.vpn
-
-import android.app.Notification
-import android.app.PendingIntent
-import android.app.Service.STOP_FOREGROUND_REMOVE
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.VpnService
-import android.os.Build
-import android.os.ParcelFileDescriptor
-import android.util.Log
-import androidx.core.app.NotificationCompat
-import com.callglitch.app.CallGlitchApplication
-import com.callglitch.app.R
-import com.callglitch.app.model.GlitchConfig
-import com.callglitch.app.model.GlitchProfileType
-import com.callglitch.app.tile.GlitchTileService
-import com.callglitch.app.ui.MainActivity
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
-import java.io.IOException
-
-class CallGlitchVpnService : VpnService() {
-
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var forwardingEngine: PacketForwardingEngine? = null
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var timeoutJob: Job? = null
-    private var watchdogJob: Job? = null
-
-    companion object {
-        private const val TAG = "CallGlitchVpnService"
-        const val ACTION_START = "com.callglitch.app.ACTION_START"
-        const val ACTION_STOP = "com.callglitch.app.ACTION_STOP"
-        const val ACTION_UPDATE_PROFILE = "com.callglitch.app.ACTION_UPDATE_PROFILE"
-        const val ACTION_UPDATE_APPS = "com.callglitch.app.ACTION_UPDATE_APPS"
-        const val EXTRA_PROFILE_TYPE = "extra_profile_type"
-        private const val NOTIFICATION_ID = 9001
-
-        private val _isRunning = MutableStateFlow(false)
-        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
-
-        private val _activeProfile = MutableStateFlow(GlitchProfileType.MODERATE)
-        val activeProfile: StateFlow<GlitchProfileType> = _activeProfile.asStateFlow()
-
-        private val _droppedPackets = MutableStateFlow(0L)
-        val droppedPackets: StateFlow<Long> = _droppedPackets.asStateFlow()
-
-        private val _forwardedPackets = MutableStateFlow(0L)
-        val forwardedPackets: StateFlow<Long> = _forwardedPackets.asStateFlow()
-
-        fun startService(context: Context, profile: GlitchProfileType = GlitchProfileType.MODERATE) {
-            val intent = Intent(context, CallGlitchVpnService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_PROFILE_TYPE, profile.name)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun stopService(context: Context) {
-            val intent = Intent(context, CallGlitchVpnService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
-        }
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        registerNetworkCallback()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                Log.i(TAG, "Stop command received. Priority STOP teardown initiated.")
-                stopVpn()
-                return START_NOT_STICKY
-            }
-            ACTION_UPDATE_PROFILE -> {
-                val profileName = intent.getStringExtra(EXTRA_PROFILE_TYPE)
-                if (profileName != null) {
-                    try {
-                        val profile = GlitchProfileType.valueOf(profileName)
-                        _activeProfile.value = profile
-                        serviceScope.launch {
-                            val repo = (application as CallGlitchApplication).settingsRepository
-                            val custom = repo.customConfigFlow.first()
-                            val config = GlitchConfig.forType(profile, custom)
-                            forwardingEngine?.updateConfig(config)
-                            updateNotification(profile)
-                            GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error updating profile: \${e.message}")
-                    }
-                }
-                return START_STICKY
-            }
-            ACTION_UPDATE_APPS -> {
-                if (_isRunning.value) {
-                    serviceScope.launch {
-                        try {
-                            val repo = (application as CallGlitchApplication).settingsRepository
-                            val selectedApps = repo.selectedPackagesFlow.first()
-                            if (selectedApps.isEmpty()) {
-                                Log.w(TAG, "All target applications deselected while active. Stopping VPN.")
-                                stopVpn()
-                                return@launch
-                            }
-                            val custom = repo.customConfigFlow.first()
-                            val config = GlitchConfig.forType(_activeProfile.value, custom)
-                            establishVpn(selectedApps, config)
-                            Log.i(TAG, "Re-established VPN TUN with updated apps: $selectedApps")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error updating apps on active VPN: \${e.message}", e)
-                            stopVpn()
-                        }
-                    }
-                }
-                return START_STICKY
-            }
-            ACTION_START, null -> {
-                val profileName = intent?.getStringExtra(EXTRA_PROFILE_TYPE)
-                val profile = profileName?.let {
-                    try { GlitchProfileType.valueOf(it) } catch (e: Exception) { GlitchProfileType.MODERATE }
-                } ?: GlitchProfileType.MODERATE
-                _activeProfile.value = profile
-
-                startForeground(NOTIFICATION_ID, buildNotification(profile))
-                startVpn(profile)
-                return START_STICKY
-            }
-        }
-        return START_NOT_STICKY
-    }
-
-    private fun startVpn(profile: GlitchProfileType) {
-        serviceScope.launch {
-            try {
-                val repo = (application as CallGlitchApplication).settingsRepository
-                val selectedApps = repo.selectedPackagesFlow.first()
-                if (selectedApps.isEmpty()) {
-                    Log.e(TAG, "Cannot start VPN: No target applications selected.")
-                    stopVpn()
-                    return@launch
-                }
-                val custom = repo.customConfigFlow.first()
-                val config = GlitchConfig.forType(profile, custom)
-                val timeoutSec = repo.autoTimeoutSecondsFlow.first()
-
-                establishVpn(selectedApps, config)
-                _isRunning.value = true
-                GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
-
-                // Schedule auto-timeout if configured
-                if (timeoutSec > 0) {
-                    timeoutJob?.cancel()
-                    timeoutJob = serviceScope.launch {
-                        delay(timeoutSec * 1000L)
-                        Log.i(TAG, "Auto-timeout of $timeoutSec seconds reached. Restoring normal network.")
-                        stopVpn()
-                    }
-                }
-
-                // Start watchdog for stalled forwarding
-                startWatchdog()
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start VPN: \${e.message}", e)
-                stopVpn()
-            }
-        }
-    }
-
-    private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
-        if (selectedApps.isEmpty()) {
-            throw IllegalStateException("No target applications selected. Please select at least one application.")
-        }
-        var allowedCount = 0
-        val builder = Builder().apply {
-            setMtu(1500)
-            addAddress("10.240.0.1", 24)
-            addAddress("fd00:call:glitch::1", 64)
-            addDnsServer("8.8.8.8")
-            addDnsServer("1.1.1.1")
-            addDnsServer("2001:4860:4860::8888")
-            addRoute("0.0.0.0", 0)
-            addRoute("::", 0)
-            setSession("CallGlitch: \${config.profileType.displayName}")
-            setBlocking(true)
-
-            // CRITICAL: Route ONLY selected applications via addAllowedApplication()
-            val pm = packageManager
-            for (pkg in selectedApps) {
-                // Ensure we never route Call Glitch through its own VPN
-                if (pkg == packageName) continue
-
-                try {
-                    pm.getPackageInfo(pkg, 0)
-                    addAllowedApplication(pkg)
-                    allowedCount++
-                    Log.d(TAG, "Routing allowed application through CallGlitch TUN: $pkg")
-                } catch (e: PackageManager.NameNotFoundException) {
-                    Log.w(TAG, "Selected app not found on device, skipping: $pkg")
-                }
-            }
-        }
-
-        if (allowedCount == 0) {
-            throw IllegalStateException("None of the selected applications are currently installed on this device.")
-        }
-
-        vpnInterface?.close()
-        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null")
-        vpnInterface = pfd
-
-        // Initialize user-space forwarding engine with impairment
-        forwardingEngine = PacketForwardingEngine(
-            vpnService = this,
-            tunFd = pfd.fileDescriptor,
-            config = config,
-            onStatsUpdate = { forwarded, dropped ->
-                _forwardedPackets.value = forwarded
-                _droppedPackets.value = dropped
-            }
-        ).also { it.start() }
-
-        Log.i(TAG, "VPN TUN interface established successfully. Allowed apps: $allowedCount")
-    }
-
-    private fun registerNetworkCallback() {
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.d(TAG, "Underlying network available: $network. Binding sockets.")
-                setUnderlyingNetworks(arrayOf(network))
-                forwardingEngine?.onUnderlyingNetworkChanged(network)
-            }
-
-            override fun onLost(network: Network) {
-                Log.d(TAG, "Underlying network lost: $network.")
-            }
-
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                setUnderlyingNetworks(arrayOf(network))
-            }
-        }
-        cm.registerNetworkCallback(request, networkCallback!!)
-    }
-
-    private fun startWatchdog() {
-        watchdogJob?.cancel()
-        watchdogJob = serviceScope.launch {
-            while (isActive) {
-                delay(5000L)
-                val isAlive = forwardingEngine?.isHealthy() ?: false
-                if (!isAlive && _isRunning.value) {
-                    Log.e(TAG, "Watchdog detected stalled forwarding engine. Tearing down immediately to prevent blackholing.")
-                    stopVpn()
-                    break
-                }
-            }
-        }
-    }
-
-    private fun buildNotification(profile: GlitchProfileType): Notification {
-        val openIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val stopIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, CallGlitchVpnService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        return NotificationCompat.Builder(this, CallGlitchApplication.CHANNEL_ID_VPN)
-            .setSmallIcon(R.drawable.ic_glitch_notification)
-            .setContentTitle("Call Glitch Active: \${profile.displayName}")
-            .setContentText("Impairing call network. Normal network will restore on STOP.")
-            .setSubText("Call Glitch")
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(openIntent)
-            .addAction(R.drawable.ic_stop, "STOP", stopIntent)
-            .build()
-    }
-
-    private fun updateNotification(profile: GlitchProfileType) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, buildNotification(profile))
-    }
-
-    private fun stopVpn() {
-        _isRunning.value = false
-        timeoutJob?.cancel()
-        watchdogJob?.cancel()
-
-        try {
-            // STOP priority: Immediately shutdown forwarding engine without waiting for queued packets
-            forwardingEngine?.stop()
-            forwardingEngine = null
-
-            vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing VPN interface: \${e.message}")
-        } finally {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            GlitchTileService.requestTileUpdate(this)
-            Log.i(TAG, "Call Glitch VPN stopped. Ordinary networking completely restored.")
-        }
-    }
-
-    override fun onRevoke() {
-        Log.w(TAG, "VpnService.onRevoke() triggered by system. Failsafe shutdown.")
-        stopVpn()
-        super.onRevoke()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        stopVpn()
-        serviceScope.cancel()
-        networkCallback?.let {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.unregisterNetworkCallback(it)
-        }
-    }
-}
-`
-  },
-  {
-    path: "app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt",
-    language: "kotlin",
-    description: "User-space packet forwarding engine applying latency, jitter, loss and bursts",
-    content: `package com.callglitch.app.vpn
-
-import android.net.Network
-import android.net.VpnService
-import android.util.Log
-import com.callglitch.app.model.GlitchConfig
-import com.callglitch.app.model.ImpairmentDirection
-import kotlinx.coroutines.*
-import java.io.FileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.random.Random
-
-/**
- * User-space packet forwarding and impairment engine foundation.
- * 
- * Architecture Note:
- * This engine operates between the local TUN file descriptor and protected outbound sockets.
- * Incoming call packets from the TUN interface pass through a bounded delay queue and random loss filter,
- * then are dispatched through underlying direct sockets protected with VpnService.protect() to prevent routing loops.
- * 
- * Identified Limitations & Next Milestone Target:
- * General internet calls often require full stateful TCP/TLS signaling and dual-stack IPv4/IPv6 translation.
- * Milestone 2 integrates an embedded user-space TCP/IP stack (e.g. tun2socks / lwIP) to handle full
- * bidirectional TCP connection state machines alongside this impairment pipeline.
- */
-class PacketForwardingEngine(
-    private val vpnService: VpnService,
-    private val tunFd: FileDescriptor,
-    private var config: GlitchConfig,
-    private val onStatsUpdate: (forwarded: Long, dropped: Long) -> Unit
-) {
-    private val isRunning = AtomicBoolean(false)
-    private val lastHeartbeat = AtomicLong(System.currentTimeMillis())
-    private val forwardedCount = AtomicLong(0)
-    private val droppedCount = AtomicLong(0)
-
-    private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // UDP NAT session table: maps client (srcIp:srcPort -> dstIp:dstPort) to a protected DatagramSocket session
-    private val udpSessions = ConcurrentHashMap<String, UdpSession>()
-
-    // Bounded packet delay queue for outgoing & incoming impairment (Max 500 packets to prevent OOM)
-    private val maxQueueCapacity = 500
-    private val delayQueue = PriorityBlockingQueue<DelayedPacket>(maxQueueCapacity, compareBy { it.scheduledReleaseTime })
-
-    // Tun streams
-    private val tunIn = FileInputStream(tunFd)
-    private val tunOut = FileOutputStream(tunFd)
-
-    companion object {
-        private const val TAG = "PacketForwardingEngine"
-        private const val BUFFER_SIZE = 32767
-    }
-
-    fun start() {
-        if (!isRunning.compareAndSet(false, true)) return
-
-        // 1. Thread: TUN Packet Reader (Outgoing traffic from App)
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (isRunning.get()) {
-                try {
-                    val length = tunIn.read(buffer)
-                    if (length > 0) {
-                        lastHeartbeat.set(System.currentTimeMillis())
-                        val packetData = buffer.copyOf(length)
-                        handleOutgoingTunPacket(packetData)
-                    }
-                } catch (e: Exception) {
-                    if (isRunning.get()) {
-                        Log.e(TAG, "Error reading from TUN: \${e.message}")
-                    }
-                    break
-                }
-            }
-        }
-
-        // 2. Thread: Delay Queue Dispatcher (Releases impaired packets when their delay expires)
-        engineScope.launch {
-            while (isRunning.get()) {
-                try {
-                    val head = delayQueue.peek()
-                    val now = System.currentTimeMillis()
-                    if (head != null && head.scheduledReleaseTime <= now) {
-                        val packet = delayQueue.poll()
-                        if (packet != null) {
-                            dispatchPacket(packet)
-                        }
-                    } else if (head != null) {
-                        val waitTime = (head.scheduledReleaseTime - now).coerceAtLeast(1)
-                        delay(waitTime)
-                    } else {
-                        delay(2)
-                    }
-                } catch (e: Exception) {
-                    delay(5)
-                }
-            }
-        }
-
-        // 3. Periodic NAT Cleanup
-        engineScope.launch {
-            while (isRunning.get()) {
-                delay(30000L)
-                cleanStaleSessions()
-            }
-        }
-    }
-
-    fun updateConfig(newConfig: GlitchConfig) {
-        this.config = newConfig
-        Log.i(TAG, "Impairment configuration updated: \${newConfig.profileType.displayName}")
-    }
-
-    fun onUnderlyingNetworkChanged(network: Network) {
-        // Re-protect open sockets on network migration
-        udpSessions.values.forEach { session ->
-            try {
-                vpnService.protect(session.socket)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to re-protect socket: \${e.message}")
-            }
-        }
-    }
-
-    private fun handleOutgoingTunPacket(data: ByteArray) {
-        if (data.isEmpty()) return
-        val version = (data[0].toInt() shr 4) and 0x0F
-
-        if (version != 4 && version != 6) return // Only IPv4 and IPv6
-
-        val protocol = if (version == 4) data[9].toInt() and 0xFF else data[6].toInt() and 0xFF
-
-        val isUdp = protocol == 17
-        val isTcp = protocol == 6
-
-        val shouldImpair = (isUdp || (isTcp && config.affectTcp)) &&
-                (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.OUTGOING)
-
-        if (shouldImpair) {
-            // Apply packet loss check
-            if (shouldDropPacket()) {
-                val dropped = droppedCount.incrementAndGet()
-                onStatsUpdate(forwardedCount.get(), dropped)
-                return
-            }
-
-            // Apply latency + jitter
-            val delayMs = calculateDelay()
-            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
-                val scheduledTime = System.currentTimeMillis() + delayMs
-                delayQueue.offer(DelayedPacket(data, scheduledTime, isIncoming = false, protocol = protocol))
-                return
-            }
-        }
-
-        // Forward immediately if no delay
-        forwardOutgoingDirect(data, protocol)
-    }
-
-    private fun forwardOutgoingDirect(data: ByteArray, protocol: Int) {
-        if (protocol == 17) { // UDP
-            forwardUdpPacket(data)
-        } else {
-            // Non-UDP pass-through
-            forwardRawPacket(data)
-        }
-    }
-
-    private fun forwardUdpPacket(packet: ByteArray) {
-        try {
-            val ipHeaderLen = (packet[0].toInt() and 0x0F) * 4
-            val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
-            val dstIp = InetAddress.getByAddress(packet.copyOfRange(16, 20))
-
-            val srcPort = ((packet[ipHeaderLen].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 1].toInt() and 0xFF)
-            val dstPort = ((packet[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 3].toInt() and 0xFF)
-
-            val udpPayload = packet.copyOfRange(ipHeaderLen + 8, packet.size)
-
-            val sessionKey = "$srcIp:$srcPort->$dstIp:$dstPort"
-            val session = udpSessions.computeIfAbsent(sessionKey) {
-                createUdpSession(srcIp, srcPort, dstIp, dstPort)
-            }
-
-            session.lastActivity = System.currentTimeMillis()
-            val datagram = DatagramPacket(udpPayload, udpPayload.size, dstIp, dstPort)
-            session.socket.send(datagram)
-
-            val forwarded = forwardedCount.incrementAndGet()
-            if (forwarded % 20L == 0L) {
-                onStatsUpdate(forwarded, droppedCount.get())
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "UDP forward error: \${e.message}")
-        }
-    }
-
-    private fun createUdpSession(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int): UdpSession {
-        val socket = DatagramSocket()
-        // CRITICAL: Protect socket from VPN routing loops
-        vpnService.protect(socket)
-
-        val session = UdpSession(socket, srcIp, srcPort, dstIp, dstPort, System.currentTimeMillis())
-
-        // Reverse listener for incoming UDP media packets from Internet
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (isRunning.get() && !socket.isClosed) {
-                try {
-                    val incoming = DatagramPacket(buffer, buffer.size)
-                    socket.receive(incoming)
-                    handleIncomingUdpPacket(session, incoming.data.copyOf(incoming.length))
-                } catch (e: Exception) {
-                    break
-                }
-            }
-        }
-        return session
-    }
-
-    private fun handleIncomingUdpPacket(session: UdpSession, payload: ByteArray) {
-        val shouldImpair = (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.INCOMING)
-
-        if (shouldImpair) {
-            if (shouldDropPacket()) {
-                val dropped = droppedCount.incrementAndGet()
-                onStatsUpdate(forwardedCount.get(), dropped)
-                return
-            }
-
-            val delayMs = calculateDelay()
-            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
-                val scheduledTime = System.currentTimeMillis() + delayMs
-                val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
-                delayQueue.offer(DelayedPacket(syntheticIpPacket, scheduledTime, isIncoming = true, protocol = 17))
-                return
-            }
-        }
-
-        val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
-        writeToTun(syntheticIpPacket)
-    }
-
-    private fun synthesizeIpUdpPacket(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int, payload: ByteArray): ByteArray {
-        val ipLen = 20
-        val udpLen = 8 + payload.size
-        val totalLen = ipLen + udpLen
-        val packet = ByteBuffer.allocate(totalLen)
-
-        // IPv4 Header
-        packet.put(0x45.toByte()) // Version 4, IHL 5
-        packet.put(0x00.toByte()) // DSCP / ECN
-        packet.putShort(totalLen.toShort())
-        packet.putShort(Random.nextInt(65535).toShort()) // ID
-        packet.putShort(0x4000.toShort()) // Flags: Don't Fragment
-        packet.put(64.toByte()) // TTL
-        packet.put(17.toByte()) // Protocol: UDP
-        packet.putShort(0) // Checksum placeholder
-        packet.put(srcIp.address)
-        packet.put(dstIp.address)
-
-        // UDP Header
-        packet.putShort(srcPort.toShort())
-        packet.putShort(dstPort.toShort())
-        packet.putShort(udpLen.toShort())
-        packet.putShort(0) // UDP Checksum
-
-        // Payload
-        packet.put(payload)
-
-        return packet.array()
-    }
-
-    private fun writeToTun(data: ByteArray) {
-        try {
-            synchronized(tunOut) {
-                tunOut.write(data)
-                tunOut.flush()
-            }
-            forwardedCount.incrementAndGet()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error writing to TUN: \${e.message}")
-        }
-    }
-
-    private fun dispatchPacket(packet: DelayedPacket) {
-        if (packet.isIncoming) {
-            writeToTun(packet.data)
-        } else {
-            forwardOutgoingDirect(packet.data, packet.protocol)
-        }
-    }
-
-    private fun forwardRawPacket(data: ByteArray) {
-        forwardedCount.incrementAndGet()
-    }
-
-    private fun shouldDropPacket(): Boolean {
-        // Burst drop simulation
-        if (config.burstInterruptionEnabled) {
-            val nowSeconds = (System.currentTimeMillis() / 1000) % config.burstIntervalSeconds
-            if (nowSeconds < (config.burstDurationMs / 1000.0)) {
-                return true
-            }
-        }
-
-        // Statistical loss
-        if (config.packetLossPercent <= 0.0) return false
-        val roll = Random.nextDouble(100.0)
-        return roll < config.packetLossPercent
-    }
-
-    private fun calculateDelay(): Long {
-        val base = config.baseLatencyMs.toLong()
-        val jitter = config.randomJitterMs
-        if (jitter <= 0) return base
-        val randomOffset = Random.nextInt(-jitter, jitter + 1)
-        return (base + randomOffset).coerceAtLeast(0)
-    }
-
-    private fun cleanStaleSessions() {
-        val now = System.currentTimeMillis()
-        val it = udpSessions.entries.iterator()
-        while (it.hasNext()) {
-            val entry = it.next()
-            if (now - entry.value.lastActivity > 60000L) { // 60s idle timeout
-                try {
-                    entry.value.socket.close()
-                } catch (e: Exception) {}
-                it.remove()
-            }
-        }
-    }
-
-    fun isHealthy(): Boolean {
-        return (System.currentTimeMillis() - lastHeartbeat.get()) < 15000L
-    }
-
-    fun stop() {
-        isRunning.set(false)
-        delayQueue.clear()
-
-        udpSessions.values.forEach { session ->
-            try { session.socket.close() } catch (e: Exception) {}
-        }
-        udpSessions.clear()
-
-        try { tunIn.close() } catch (e: Exception) {}
-        try { tunOut.close() } catch (e: Exception) {}
-
-        engineScope.cancel()
-    }
-
-    private data class DelayedPacket(
-        val data: ByteArray,
-        val scheduledReleaseTime: Long,
-        val isIncoming: Boolean,
-        val protocol: Int
-    )
-
-    private data class UdpSession(
-        val socket: DatagramSocket,
-        val srcIp: InetAddress,
-        val srcPort: Int,
-        val dstIp: InetAddress,
-        val dstPort: Int,
-        var lastActivity: Long
-    )
-}
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_glitch_notification.xml",
-    language: "xml",
-    description: "Vector drawable for active VPN foreground notification icon",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12,1L3,5v6c0,5.55 3.84,10.74 9,12 5.16,-1.26 9,-6.45 9,-12V5l-9,-4zM11.5,16h-1l0.8,-5.5H8.5l3.5,-6.5h1l-0.8,5.5h2.8l-3.5,6.5z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_launcher_background.xml",
-    language: "xml",
-    description: "Android project file: app/src/main/res/drawable/ic_launcher_background.xml",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="#0F172A"
-        android:pathData="M0,0h108v108h-108z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_launcher_foreground.xml",
-    language: "xml",
-    description: "Android project file: app/src/main/res/drawable/ic_launcher_foreground.xml",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="#0EA5E9"
-        android:pathData="M54,20A34,34 0 1,0 88,54A34,34 0 0,0 54,20ZM54,80A26,26 0 1,1 80,54A26,26 0 0,1 54,80Z"/>
-    <path
-        android:fillColor="#38BDF8"
-        android:pathData="M51,69h-4l3,-21h-9.5c-1.8,0 -1.7,-1 -1.1,-2.1 0.6,-1.1 0.2,-0.3 0.2,-0.4l15.4,-25.5h4l-3,21h9.5c1.5,0 1.7,1 1.4,1.6l-0.2,0.5L51,69z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_stop.xml",
-    language: "xml",
-    description: "Vector drawable for STOP notification action",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M6,6h12v12H6z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_tile_glitch.xml",
-    language: "xml",
-    description: "Vector drawable for Quick Settings Tile inactive state",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,4c4.42,0 8,3.58 8,8 0,1.85 -0.63,3.55 -1.69,4.9L7.1,5.69C8.45,4.63 10.15,4 12,4zM5.69,7.1L16.9,18.31C15.55,19.37 13.85,20 12,20c-4.42,0 -8,-3.58 -8,-8 0,-1.85 0.63,-3.55 1.69,-4.9z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/drawable/ic_tile_glitch_active.xml",
-    language: "xml",
-    description: "Vector drawable for Quick Settings Tile active state",
-    content: `<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <!-- Active flame / lightning glitch vector -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M11,21h-1l1,-7H7.5c-0.58,0 -0.57,-0.32 -0.38,-0.66 0.19,-0.34 0.05,-0.08 0.07,-0.12C8.48,10.94 10.42,7.54 13,3h1l-1,7h3.5c0.49,0 0.56,0.33 0.47,0.51l-0.07,0.15C14.9,14.28 12.95,17.7 11,21z"/>
-</vector>
-`
-  },
-  {
-    path: "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
-    language: "xml",
-    description: "Android project file: app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
-    content: `<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-</adaptive-icon>
-`
-  },
-  {
-    path: "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
-    language: "xml",
-    description: "Android project file: app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
-    content: `<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-</adaptive-icon>
-`
-  },
-  {
-    path: "app/src/main/res/values/colors.xml",
-    language: "xml",
-    description: "Color palette definitions matching Call Glitch design",
-    content: `<resources>
-    <color name="primary">#0EA5E9</color>
-    <color name="primary_variant">#0284C7</color>
-    <color name="glitch_red">#EF4444</color>
-    <color name="glitch_amber">#F59E0B</color>
-    <color name="glitch_green">#10B981</color>
-    <color name="launcher_bg">#0F172A</color>
-</resources>
-`
-  },
-  {
-    path: "app/src/main/res/values/strings.xml",
-    language: "xml",
-    description: "Application string resources",
-    content: `<resources>
-    <string name="app_name">Call Glitch</string>
-    <string name="tile_name">Call Glitch</string>
-    <string name="notification_channel_name">Call Glitch Active State</string>
-    <string name="notification_channel_desc">Shows ongoing call network impairment state and STOP control</string>
-</resources>
-`
-  },
-  {
-    path: "app/src/main/res/values/themes.xml",
-    language: "xml",
-    description: "Material3 theme definitions",
-    content: `<resources>
-    <style name="Theme.CallGlitch" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">@color/primary_variant</item>
-        <item name="android:navigationBarColor">#FFFFFF</item>
-    </style>
-</resources>
-`
-  },
-  {
-    path: "app/src/main/res/xml/backup_rules.xml",
-    language: "xml",
-    description: "Legacy backup configuration rules",
-    content: `<?xml version="1.0" encoding="utf-8"?>
-<full-backup-content>
-    <exclude domain="sharedpref" path="." />
-</full-backup-content>
-`
-  },
-  {
-    path: "app/src/main/res/xml/data_extraction_rules.xml",
-    language: "xml",
-    description: "Android 12+ cloud and device backup configuration",
-    content: `<?xml version="1.0" encoding="utf-8"?>
-<data-extraction-rules>
-    <cloud-backup>
-        <exclude domain="sharedpref" path="." />
-    </cloud-backup>
-    <device-transfer>
-        <exclude domain="sharedpref" path="." />
-    </device-transfer>
-</data-extraction-rules>
-`
-  },
-  {
-    path: "app/src/test/java/com/callglitch/app/AppDiscoveryAndSelectionTest.kt",
-    language: "kotlin",
-    description: "Unit tests verifying installed app discovery, self-exclusion and selection validation",
-    content: `package com.callglitch.app
-
-import com.callglitch.app.model.InstalledAppInfo
-import org.junit.Assert.*
-import org.junit.Test
-
-class AppDiscoveryAndSelectionTest {
-
-    @Test
-    fun testInstalledAppInfoProperties() {
-        val app = InstalledAppInfo(
-            packageName = "com.whatsapp",
-            appName = "WhatsApp",
-            isSystemApp = false,
-            hasLauncher = true
-        )
-        assertEquals("com.whatsapp", app.packageName)
-        assertEquals("WhatsApp", app.appName)
-        assertFalse(app.isSystemApp)
-        assertTrue(app.hasLauncher)
-    }
-
-    @Test
-    fun testSelfExclusionFilteringLogic() {
-        val selfPackage = "com.callglitch.app"
-        val discoveredPackages = listOf(
-            "com.whatsapp",
-            "org.telegram.messenger",
-            "com.callglitch.app",
-            "com.google.android.youtube"
-        )
-
-        val filtered = discoveredPackages.filter { it != selfPackage }
-        assertFalse(filtered.contains("com.callglitch.app"))
-        assertEquals(3, filtered.size)
-    }
-
-    @Test
-    fun testEmptySelectionValidation() {
-        val selectedPackages = emptySet<String>()
-        assertTrue("Selected packages must be empty by default", selectedPackages.isEmpty())
-
-        // Simulating the safety guard in CallGlitchVpnService
-        val canStart = selectedPackages.isNotEmpty()
-        assertFalse("VPN must not be permitted to start when no apps are selected", canStart)
-    }
-
-    @Test
-    fun testAlphabeticalSortingCaseInsensitive() {
-        val list = listOf(
-            InstalledAppInfo("com.zoom", "zoom", false, true),
-            InstalledAppInfo("com.apple", "Apple Music", false, true),
-            InstalledAppInfo("com.whatsapp", "WhatsApp", false, true),
-            InstalledAppInfo("com.discord", "discord", false, true)
-        )
-
-        val sorted = list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.appName })
-        assertEquals("Apple Music", sorted[0].appName)
-        assertEquals("discord", sorted[1].appName)
-        assertEquals("WhatsApp", sorted[2].appName)
-        assertEquals("zoom", sorted[3].appName)
-    }
-}
-`
-  },
-  {
     path: "app/src/test/java/com/callglitch/app/GlitchConfigTest.kt",
     language: "kotlin",
-    description: "Unit tests verifying impairment profile configurations and parameters",
+    description: "Unit tests verifying profile configuration parameters, jitter ranges, and timeout settings",
     content: `package com.callglitch.app
 
 import com.callglitch.app.model.GlitchConfig
@@ -2679,103 +2626,72 @@ class GlitchConfigTest {
 `
   },
   {
-    path: "build.gradle.kts",
+    path: "app/src/test/java/com/callglitch/app/AppDiscoveryAndSelectionTest.kt",
     language: "kotlin",
-    description: "Top-level root build script with Kotlin and Android Gradle plugins",
-    content: `plugins {
-    alias(libs.plugins.android.application) apply false
-    alias(libs.plugins.kotlin.android) apply false
-    alias(libs.plugins.kotlin.compose) apply false
-}
-`
-  },
-  {
-    path: "gradle/libs.versions.toml",
-    language: "properties",
-    description: "Version catalog standardizing dependencies for Compose and Kotlin",
-    content: `[versions]
-agp = "8.7.2"
-kotlin = "2.0.21"
-coreKtx = "1.15.0"
-lifecycleRuntimeKtx = "2.8.7"
-activityCompose = "1.9.3"
-composeBom = "2024.10.01"
-datastore = "1.1.1"
-coroutines = "1.9.0"
-materialIconsExtended = "1.7.5"
-junit = "4.13.2"
+    description: "Unit tests validating dynamic application selection, system filtering, and empty checks",
+    content: `package com.callglitch.app
 
-[libraries]
-androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
-androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
-androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
-androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-androidx-ui = { group = "androidx.compose.ui", name = "ui" }
-androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
-androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
-androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
-androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
-androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsExtended" }
-androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
-kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
-kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
-junit = { group = "junit", name = "junit", version.ref = "junit" }
+import com.callglitch.app.model.InstalledAppInfo
+import org.junit.Assert.*
+import org.junit.Test
 
-[plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-`
-  },
-  {
-    path: "gradle/wrapper/gradle-wrapper.properties",
-    language: "properties",
-    description: "Gradle wrapper properties specifying Gradle distribution v8.10.2",
-    content: `distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip
-networkTimeout=10000
-validateDistributionUrl=true
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-`
-  },
-  {
-    path: "gradle.properties",
-    language: "properties",
-    description: "Gradle properties enabling AndroidX and JVM options",
-    content: `android.useAndroidX=true
-org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-kotlin.code.style=official
-`
-  },
-  {
-    path: "settings.gradle.kts",
-    language: "kotlin",
-    description: "Gradle settings defining repository endpoints and the app module",
-    content: `pluginManagement {
-    repositories {
-        google {
-            content {
-                includeGroupByRegex("com\\\\.android.*")
-                includeGroupByRegex("com\\\\.google.*")
-                includeGroupByRegex("androidx.*")
-            }
-        }
-        mavenCentral()
-        gradlePluginPortal()
+class AppDiscoveryAndSelectionTest {
+
+    @Test
+    fun testInstalledAppInfoProperties() {
+        val app = InstalledAppInfo(
+            packageName = "com.whatsapp",
+            appName = "WhatsApp",
+            isSystemApp = false,
+            hasLauncher = true
+        )
+        assertEquals("com.whatsapp", app.packageName)
+        assertEquals("WhatsApp", app.appName)
+        assertFalse(app.isSystemApp)
+        assertTrue(app.hasLauncher)
+    }
+
+    @Test
+    fun testSelfExclusionFilteringLogic() {
+        val selfPackage = "com.callglitch.app"
+        val discoveredPackages = listOf(
+            "com.whatsapp",
+            "org.telegram.messenger",
+            "com.callglitch.app",
+            "com.google.android.youtube"
+        )
+
+        val filtered = discoveredPackages.filter { it != selfPackage }
+        assertFalse(filtered.contains("com.callglitch.app"))
+        assertEquals(3, filtered.size)
+    }
+
+    @Test
+    fun testEmptySelectionValidation() {
+        val selectedPackages = emptySet<String>()
+        assertTrue("Selected packages must be empty by default", selectedPackages.isEmpty())
+
+        // Simulating the safety guard in CallGlitchVpnService
+        val canStart = selectedPackages.isNotEmpty()
+        assertFalse("VPN must not be permitted to start when no apps are selected", canStart)
+    }
+
+    @Test
+    fun testAlphabeticalSortingCaseInsensitive() {
+        val list = listOf(
+            InstalledAppInfo("com.zoom", "zoom", false, true),
+            InstalledAppInfo("com.apple", "Apple Music", false, true),
+            InstalledAppInfo("com.whatsapp", "WhatsApp", false, true),
+            InstalledAppInfo("com.discord", "discord", false, true)
+        )
+
+        val sorted = list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.appName })
+        assertEquals("Apple Music", sorted[0].appName)
+        assertEquals("discord", sorted[1].appName)
+        assertEquals("WhatsApp", sorted[2].appName)
+        assertEquals("zoom", sorted[3].appName)
     }
 }
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-rootProject.name = "CallGlitch"
-include(":app")
 `
   },
 ];

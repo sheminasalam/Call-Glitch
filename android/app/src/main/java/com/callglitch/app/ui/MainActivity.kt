@@ -139,6 +139,20 @@ class MainActivity : ComponentActivity() {
                             requestAddQuickSettingsTile()
                         }
                     )
+
+                    val lastError by CallGlitchVpnService.lastErrorMessage.collectAsState()
+                    if (lastError != null) {
+                        AlertDialog(
+                            onDismissRequest = { CallGlitchVpnService.clearLastError() },
+                            title = { Text("VPN Could Not Start") },
+                            text = { Text(lastError ?: "An unexpected error occurred while establishing the VPN interface.") },
+                            confirmButton = {
+                                Button(onClick = { CallGlitchVpnService.clearLastError() }) {
+                                    Text("OK")
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }

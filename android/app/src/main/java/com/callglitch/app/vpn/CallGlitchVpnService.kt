@@ -6,6 +6,7 @@ import android.app.Service.STOP_FOREGROUND_REMOVE
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -57,6 +58,13 @@ class CallGlitchVpnService : VpnService() {
 
         private val _forwardedPackets = MutableStateFlow(0L)
         val forwardedPackets: StateFlow<Long> = _forwardedPackets.asStateFlow()
+
+        private val _lastErrorMessage = MutableStateFlow<String?>(null)
+        val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
+
+        fun clearLastError() {
+            _lastErrorMessage.value = null
+        }
 
         fun startService(context: Context, profile: GlitchProfileType = GlitchProfileType.MODERATE) {
             val intent = Intent(context, CallGlitchVpnService::class.java).apply {
@@ -140,12 +148,36 @@ class CallGlitchVpnService : VpnService() {
                 } ?: GlitchProfileType.MODERATE
                 _activeProfile.value = profile
 
-                startForeground(NOTIFICATION_ID, buildNotification(profile))
+                startForegroundSafely(profile)
                 startVpn(profile)
                 return START_STICKY
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun startForegroundSafely(profile: GlitchProfileType) {
+        val notification = buildNotification(profile)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, 0)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed: ${e.message}", e)
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (ignored: Exception) {
+                Log.w(TAG, "Notification fallback omitted.")
+            }
+        }
     }
 
     private fun startVpn(profile: GlitchProfileType) {
@@ -154,7 +186,9 @@ class CallGlitchVpnService : VpnService() {
                 val repo = (application as CallGlitchApplication).settingsRepository
                 val selectedApps = repo.selectedPackagesFlow.first()
                 if (selectedApps.isEmpty()) {
-                    Log.e(TAG, "Cannot start VPN: No target applications selected.")
+                    val err = "No target applications selected. Please select at least one application."
+                    Log.e(TAG, err)
+                    _lastErrorMessage.value = err
                     stopVpn()
                     return@launch
                 }
@@ -164,6 +198,7 @@ class CallGlitchVpnService : VpnService() {
 
                 establishVpn(selectedApps, config)
                 _isRunning.value = true
+                _lastErrorMessage.value = null
                 GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
 
                 // Schedule auto-timeout if configured
@@ -181,6 +216,7 @@ class CallGlitchVpnService : VpnService() {
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start VPN: ${e.message}", e)
+                _lastErrorMessage.value = e.message ?: "Failed to establish VPN interface"
                 stopVpn()
             }
         }
@@ -194,14 +230,20 @@ class CallGlitchVpnService : VpnService() {
         val builder = Builder().apply {
             setMtu(1500)
             addAddress("10.240.0.1", 24)
-            addAddress("fd00:call:glitch::1", 64)
             addDnsServer("8.8.8.8")
             addDnsServer("1.1.1.1")
-            addDnsServer("2001:4860:4860::8888")
             addRoute("0.0.0.0", 0)
-            addRoute("::", 0)
             setSession("CallGlitch: ${config.profileType.displayName}")
             setBlocking(true)
+
+            // Gracefully add IPv6 routes & addresses if supported on device
+            try {
+                addAddress("fd00:call:glitch::1", 64)
+                addRoute("::", 0)
+                addDnsServer("2001:4860:4860::8888")
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 address or route not supported on this interface: ${e.message}")
+            }
 
             // CRITICAL: Route ONLY selected applications via addAllowedApplication()
             val pm = packageManager
@@ -221,11 +263,11 @@ class CallGlitchVpnService : VpnService() {
         }
 
         if (allowedCount == 0) {
-            throw IllegalStateException("None of the selected applications are currently installed on this device.")
+            throw IllegalStateException("None of the selected applications (${selectedApps.joinToString()}) are currently installed on this device.")
         }
 
         vpnInterface?.close()
-        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null")
+        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission was approved.")
         vpnInterface = pfd
 
         // Initialize user-space forwarding engine with impairment

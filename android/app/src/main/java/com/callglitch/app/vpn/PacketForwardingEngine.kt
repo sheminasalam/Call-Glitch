@@ -343,7 +343,7 @@ class PacketForwardingEngine(
     }
 
     fun isHealthy(): Boolean {
-        return (System.currentTimeMillis() - lastHeartbeat.get()) < 15000L
+        return isRunning.get()
     }
 
     fun stop() {

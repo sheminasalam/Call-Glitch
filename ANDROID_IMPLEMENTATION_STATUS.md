@@ -90,10 +90,26 @@ In strict adherence to requirements, the floating control bubble has been eradic
 - Integrated `StatusBarManager.requestAddTileService` prompt in `MainActivity.kt` for Android 13+ devices.
 - Persistent foreground notification with prominent **STOP** button retained as secondary recovery control.
 
-### H. Unified Single Source of Truth
-- The files in `android/` are the authoritative source.
-- `src/android/projectFiles.ts` mirrors the real project files.
-- `src/utils/projectZip.ts` now bundles the real Gradle wrapper, binary JAR, vector resources, and Kotlin files.
+### I. Root Cause Analysis & Resolution for "Nothing happens even when I click start / VPN not creating"
+The issue where tapping START resulted in no VPN creation or apparent activity was traced to 5 compounding root causes:
+1. **Android 14+ (API 34/35) Foreground Service Crash:**
+   - *Cause:* Target SDK is 35 (`compileSdk = 35`, `targetSdk = 35`). Manifest specifies `android:foregroundServiceType="specialUse"`. Calling `startForeground(id, notification)` without specifying the foreground service type on Android 14+ throws `MissingForegroundServiceTypeException` and terminates the service immediately before the VPN interface is initialized.
+   - *Fix:* Added `startForegroundSafely` in `CallGlitchVpnService.kt` that passes `ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE` on Android 14+ and wraps foreground attachment in a safety try-catch block.
+2. **Aggressive Watchdog Premature Shutdown:**
+   - *Cause:* `PacketForwardingEngine.isHealthy()` judged the engine dead if `System.currentTimeMillis() - lastHeartbeat.get() >= 15000L`. Because `lastHeartbeat` is only bumped when packets are read from the TUN interface, on an idle device (or before the user initiated an active call), the watchdog declared the engine dead after 15 seconds and automatically called `stopVpn()`.
+   - *Fix:* Changed `isHealthy()` to verify `isRunning.get()` instead of packet traversal time.
+3. **Empty Target Application Block with Silent UI Feedback:**
+   - *Cause:* On fresh installs, `selectedPackages` is empty (`emptySet()`). Tapping START previously showed a transient toast and relied on a fragile boolean flip to show the app selection dialog. If the user tapped START repeatedly, nothing happened visually.
+   - *Fix:* 
+     - Made the START button's `onClick` directly open `showAppDialog = true` when `selectedPackages.isEmpty()`.
+     - Added a prominent status card and warning badge indicating "No Target Apps Selected - Select at least 1 app before starting".
+     - Added a 1-tap "Quick-Select Detected Calling Apps" button in `AppSelectionDialog` that detects any installed calling apps (WhatsApp, Telegram, Meet, Zoom, Instagram, Messenger, Discord, Chamet, etc.) for instant 1-tap selection.
+4. **Silent Error Swallowing in `startVpn`:**
+   - *Cause:* Any error during `establishVpn` (e.g. `VpnService.Builder.establish()` returning null if permission was rejected or not ready) called `stopVpn()` silently with no error state propagated to the UI.
+   - *Fix:* Added `_lastErrorMessage` in `CallGlitchVpnService` and an `AlertDialog` in `MainActivity.kt` that surfaces exact failure causes to the user.
+5. **IPv6 Route Rejection on Certain Carriers/Devices:**
+   - *Cause:* Unconditionally adding `addAddress("fd00:call:glitch::1", 64)` and `addRoute("::", 0)` caused `builder.establish()` to return null or throw `IllegalArgumentException` on devices lacking IPv6 TUN support.
+   - *Fix:* Wrapped IPv6 route and address configuration in a graceful try-catch block so IPv4 routing succeeds unconditionally.
 
 ---
 

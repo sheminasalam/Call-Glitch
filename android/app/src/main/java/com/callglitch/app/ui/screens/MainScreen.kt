@@ -160,7 +160,13 @@ fun MainScreen(
 
             // 2. Large Tactile ON/OFF Toggle
             Surface(
-                onClick = { onToggleGlitch(!isRunning) },
+                onClick = {
+                    if (!isRunning && selectedPackages.isEmpty()) {
+                        showAppDialog = true
+                    } else {
+                        onToggleGlitch(!isRunning)
+                    }
+                },
                 shape = CircleShape,
                 color = if (isRunning) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
                 shadowElevation = 8.dp,
@@ -571,6 +577,61 @@ fun AppSelectionDialog(
                         onClick = { includeSystemApps = !includeSystemApps },
                         label = { Text("System Apps", fontSize = 11.sp) }
                     )
+                }
+
+                // Quick-action helper for detected calling & conferencing applications
+                val detectedCallingApps = remember(installedApps) {
+                    val keywords = listOf(
+                        "whatsapp", "telegram", "tachyon", "zoom", "meet", "instagram",
+                        "orca", "discord", "chamet", "skype", "viber", "call", "wechat"
+                    )
+                    installedApps.filter { app ->
+                        keywords.any { kw ->
+                            app.packageName.lowercase().contains(kw) || app.appName.lowercase().contains(kw)
+                        }
+                    }
+                }
+
+                if (detectedCallingApps.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                tempSelected = tempSelected + detectedCallingApps.map { it.packageName }
+                            },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Call,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Quick-Select Detected Calling Apps (${detectedCallingApps.size})",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            Text(
+                                "+ Add All",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

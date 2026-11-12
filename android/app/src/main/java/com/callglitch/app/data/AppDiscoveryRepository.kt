@@ -37,8 +37,19 @@ class AppDiscoveryRepository(private val context: Context) {
                     return@mapNotNull null
                 }
 
+                val hasLauncher = try {
+                    packageManager.getLaunchIntentForPackage(appInfo.packageName) != null
+                } catch (e: Exception) {
+                    false
+                }
+
                 val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                if (isSystem && !includeSystemApps) {
+                val isUpdatedSystem = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+
+                // Only consider background framework components as system apps; keep launcher-visible apps
+                val isSystemFramework = isSystem && !isUpdatedSystem && !hasLauncher
+
+                if (isSystemFramework && !includeSystemApps) {
                     return@mapNotNull null
                 }
 
@@ -46,12 +57,6 @@ class AppDiscoveryRepository(private val context: Context) {
                     packageManager.getApplicationLabel(appInfo).toString()
                 } catch (e: Exception) {
                     appInfo.packageName
-                }
-
-                val hasLauncher = try {
-                    packageManager.getLaunchIntentForPackage(appInfo.packageName) != null
-                } catch (e: Exception) {
-                    false
                 }
 
                 InstalledAppInfo(

@@ -390,7 +390,7 @@ export default function App() {
                     <span className="text-[11px] text-sky-500 font-medium">Browse →</span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Inspect VpnService.kt, TileService.kt, OverlayService.kt, Compose screens, and download the full .ZIP project.
+                    Inspect VpnService.kt, PacketForwardingEngine.kt, TileService.kt, Compose screens, and download the full .ZIP project.
                   </p>
                 </div>
               </div>
