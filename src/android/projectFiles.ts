@@ -520,6 +520,7 @@ import android.util.Log
 import com.callglitch.app.CallGlitchApplication
 import com.callglitch.app.R
 import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.ui.MainActivity
 import com.callglitch.app.vpn.CallGlitchVpnService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
