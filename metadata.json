@@ -1,0 +1,6 @@
+{
+  "name": "Call Glitch - Per-App Network Impairment Utility",
+  "description": "Native Android rootless per-app network impairment utility and interactive testing workbench for simulated voice and video call degradation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
