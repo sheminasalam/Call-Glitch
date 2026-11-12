@@ -339,9 +339,9 @@ data class GlitchConfig(
     companion object {
         val MILD = GlitchConfig(
             profileType = GlitchProfileType.MILD,
-            baseLatencyMs = 120,
-            randomJitterMs = 30,
-            packetLossPercent = 1.0,
+            baseLatencyMs = 280,
+            randomJitterMs = 80,
+            packetLossPercent = 10.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
@@ -349,9 +349,9 @@ data class GlitchConfig(
 
         val MODERATE = GlitchConfig(
             profileType = GlitchProfileType.MODERATE,
-            baseLatencyMs = 220,
-            randomJitterMs = 90,
-            packetLossPercent = 3.0,
+            baseLatencyMs = 750,
+            randomJitterMs = 300,
+            packetLossPercent = 35.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
@@ -359,12 +359,12 @@ data class GlitchConfig(
 
         val SEVERE = GlitchConfig(
             profileType = GlitchProfileType.SEVERE,
-            baseLatencyMs = 350,
-            randomJitterMs = 160,
-            packetLossPercent = 7.0,
+            baseLatencyMs = 2000,
+            randomJitterMs = 800,
+            packetLossPercent = 75.0,
             burstInterruptionEnabled = true,
-            burstDurationMs = 1200,
-            burstIntervalSeconds = 10,
+            burstDurationMs = 2500,
+            burstIntervalSeconds = 6,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
         )
@@ -1030,8 +1030,8 @@ class PacketForwardingEngine(
     // TCP transparent proxy session table: maps (clientPort -> dstIp:dstPort) to a protected Socket session
     private val tcpSessions = ConcurrentHashMap<String, TcpSession>()
 
-    // Bounded packet delay queue for outgoing & incoming impairment (Max 800 packets)
-    private val maxQueueCapacity = 800
+    // Bounded packet delay queue for outgoing & incoming impairment (Max 3000 packets for up to 3000ms latency)
+    private val maxQueueCapacity = 3000
     private val delayQueue = PriorityBlockingQueue<DelayedPacket>(maxQueueCapacity, compareBy { it.scheduledReleaseTime })
 
     // TUN streams
@@ -1627,10 +1627,12 @@ class PacketForwardingEngine(
     // =========================================================================
 
     private fun shouldDropPacket(): Boolean {
-        // Burst drop simulation
-        if (config.burstInterruptionEnabled) {
-            val nowSeconds = (System.currentTimeMillis() / 1000) % config.burstIntervalSeconds
-            if (nowSeconds < (config.burstDurationMs / 1000.0)) {
+        // Burst drop simulation: completely drops 100% of media packets during the burst cut window
+        if (config.burstInterruptionEnabled && config.burstIntervalSeconds > 0) {
+            val nowMs = System.currentTimeMillis()
+            val cycleMs = config.burstIntervalSeconds * 1000L
+            val cyclePos = nowMs % cycleMs
+            if (cyclePos < config.burstDurationMs) {
                 return true
             }
         }
@@ -2143,8 +2145,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.callglitch.app.CallGlitchApplication
@@ -2319,8 +2324,7 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Swipe down Quick Settings, tap Edit (pencil icon), and drag Call Glitch into your active tiles.", Toast.LENGTH_LONG).show()
         }
     }
-}
-`
+}`
   },
   {
     path: "app/src/main/java/com/callglitch/app/ui/screens/MainScreen.kt",
@@ -2562,9 +2566,9 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 when (profile) {
-                                    GlitchProfileType.MILD -> "120ms / 1%"
-                                    GlitchProfileType.MODERATE -> "220ms / 3%"
-                                    GlitchProfileType.SEVERE -> "350ms / 7%"
+                                    GlitchProfileType.MILD -> "280ms / 10%"
+                                    GlitchProfileType.MODERATE -> "750ms / 35%"
+                                    GlitchProfileType.SEVERE -> "2000ms / 75%"
                                     GlitchProfileType.CUSTOM -> "Custom"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -2715,28 +2719,62 @@ fun MainScreen(
 
             AnimatedVisibility(visible = showAdvanced) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text("Base Latency: \${customConfig.baseLatencyMs} ms", fontSize = 13.sp)
+                    Text("Base Latency: \${customConfig.baseLatencyMs} ms", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.baseLatencyMs.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(baseLatencyMs = it.toInt())) },
-                        valueRange = 0f..800f
+                        valueRange = 0f..3000f,
+                        steps = 59
                     )
 
-                    Text("Random Jitter: ±\${customConfig.randomJitterMs} ms", fontSize = 13.sp)
+                    Text("Random Jitter: ±\${customConfig.randomJitterMs} ms", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.randomJitterMs.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(randomJitterMs = it.toInt())) },
-                        valueRange = 0f..300f
+                        valueRange = 0f..1500f,
+                        steps = 59
                     )
 
-                    Text("Packet Loss: \${String.format("%.1f", customConfig.packetLossPercent)} %", fontSize = 13.sp)
+                    Text("Packet Loss: \${String.format("%.1f", customConfig.packetLossPercent)} %", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.packetLossPercent.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(packetLossPercent = it.toDouble())) },
-                        valueRange = 0f..25f
+                        valueRange = 0f..95f,
+                        steps = 94
                     )
 
-                    Text("Traffic Direction: \${customConfig.direction.displayName}", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Burst Interruption Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Burst Drop (Temporary Total Cut)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("Drops 100% of media packets intermittently to trigger 'Reconnecting'", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = customConfig.burstInterruptionEnabled,
+                            onCheckedChange = { onUpdateCustomConfig(customConfig.copy(burstInterruptionEnabled = it)) }
+                        )
+                    }
+
+                    if (customConfig.burstInterruptionEnabled) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Cut Duration: \${(customConfig.burstDurationMs / 1000.0)}s every \${customConfig.burstIntervalSeconds}s", fontSize = 12.sp)
+                        Slider(
+                            value = customConfig.burstDurationMs.toFloat(),
+                            onValueChange = { onUpdateCustomConfig(customConfig.copy(burstDurationMs = it.toInt())) },
+                            valueRange = 500f..4000f,
+                            steps = 34
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text("Traffic Direction: \${customConfig.direction.displayName}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -3194,9 +3232,9 @@ class GlitchConfigTest {
     fun testMildProfileParameters() {
         val mild = GlitchConfig.MILD
         assertEquals(GlitchProfileType.MILD, mild.profileType)
-        assertEquals(120, mild.baseLatencyMs)
-        assertEquals(30, mild.randomJitterMs)
-        assertEquals(1.0, mild.packetLossPercent, 0.001)
+        assertEquals(280, mild.baseLatencyMs)
+        assertEquals(80, mild.randomJitterMs)
+        assertEquals(10.0, mild.packetLossPercent, 0.001)
         assertFalse(mild.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, mild.direction)
         assertFalse(mild.affectTcp)
@@ -3206,9 +3244,9 @@ class GlitchConfigTest {
     fun testModerateProfileParameters() {
         val moderate = GlitchConfig.MODERATE
         assertEquals(GlitchProfileType.MODERATE, moderate.profileType)
-        assertEquals(220, moderate.baseLatencyMs)
-        assertEquals(90, moderate.randomJitterMs)
-        assertEquals(3.0, moderate.packetLossPercent, 0.001)
+        assertEquals(750, moderate.baseLatencyMs)
+        assertEquals(300, moderate.randomJitterMs)
+        assertEquals(35.0, moderate.packetLossPercent, 0.001)
         assertFalse(moderate.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, moderate.direction)
         assertFalse(moderate.affectTcp)
@@ -3218,11 +3256,12 @@ class GlitchConfigTest {
     fun testSevereProfileParameters() {
         val severe = GlitchConfig.SEVERE
         assertEquals(GlitchProfileType.SEVERE, severe.profileType)
-        assertEquals(350, severe.baseLatencyMs)
-        assertEquals(160, severe.randomJitterMs)
-        assertEquals(7.0, severe.packetLossPercent, 0.001)
+        assertEquals(2000, severe.baseLatencyMs)
+        assertEquals(800, severe.randomJitterMs)
+        assertEquals(75.0, severe.packetLossPercent, 0.001)
         assertTrue(severe.burstInterruptionEnabled)
-        assertEquals(1200, severe.burstDurationMs)
+        assertEquals(2500, severe.burstDurationMs)
+        assertEquals(6, severe.burstIntervalSeconds)
         assertEquals(ImpairmentDirection.BOTH, severe.direction)
         assertFalse(severe.affectTcp)
     }

@@ -12,9 +12,9 @@ class GlitchConfigTest {
     fun testMildProfileParameters() {
         val mild = GlitchConfig.MILD
         assertEquals(GlitchProfileType.MILD, mild.profileType)
-        assertEquals(120, mild.baseLatencyMs)
-        assertEquals(30, mild.randomJitterMs)
-        assertEquals(1.0, mild.packetLossPercent, 0.001)
+        assertEquals(280, mild.baseLatencyMs)
+        assertEquals(80, mild.randomJitterMs)
+        assertEquals(10.0, mild.packetLossPercent, 0.001)
         assertFalse(mild.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, mild.direction)
         assertFalse(mild.affectTcp)
@@ -24,9 +24,9 @@ class GlitchConfigTest {
     fun testModerateProfileParameters() {
         val moderate = GlitchConfig.MODERATE
         assertEquals(GlitchProfileType.MODERATE, moderate.profileType)
-        assertEquals(220, moderate.baseLatencyMs)
-        assertEquals(90, moderate.randomJitterMs)
-        assertEquals(3.0, moderate.packetLossPercent, 0.001)
+        assertEquals(750, moderate.baseLatencyMs)
+        assertEquals(300, moderate.randomJitterMs)
+        assertEquals(35.0, moderate.packetLossPercent, 0.001)
         assertFalse(moderate.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, moderate.direction)
         assertFalse(moderate.affectTcp)
@@ -36,11 +36,12 @@ class GlitchConfigTest {
     fun testSevereProfileParameters() {
         val severe = GlitchConfig.SEVERE
         assertEquals(GlitchProfileType.SEVERE, severe.profileType)
-        assertEquals(350, severe.baseLatencyMs)
-        assertEquals(160, severe.randomJitterMs)
-        assertEquals(7.0, severe.packetLossPercent, 0.001)
+        assertEquals(2000, severe.baseLatencyMs)
+        assertEquals(800, severe.randomJitterMs)
+        assertEquals(75.0, severe.packetLossPercent, 0.001)
         assertTrue(severe.burstInterruptionEnabled)
-        assertEquals(1200, severe.burstDurationMs)
+        assertEquals(2500, severe.burstDurationMs)
+        assertEquals(6, severe.burstIntervalSeconds)
         assertEquals(ImpairmentDirection.BOTH, severe.direction)
         assertFalse(severe.affectTcp)
     }

@@ -28,9 +28,9 @@ data class GlitchConfig(
     companion object {
         val MILD = GlitchConfig(
             profileType = GlitchProfileType.MILD,
-            baseLatencyMs = 120,
-            randomJitterMs = 30,
-            packetLossPercent = 1.0,
+            baseLatencyMs = 280,
+            randomJitterMs = 80,
+            packetLossPercent = 10.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
@@ -38,9 +38,9 @@ data class GlitchConfig(
 
         val MODERATE = GlitchConfig(
             profileType = GlitchProfileType.MODERATE,
-            baseLatencyMs = 220,
-            randomJitterMs = 90,
-            packetLossPercent = 3.0,
+            baseLatencyMs = 750,
+            randomJitterMs = 300,
+            packetLossPercent = 35.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
@@ -48,12 +48,12 @@ data class GlitchConfig(
 
         val SEVERE = GlitchConfig(
             profileType = GlitchProfileType.SEVERE,
-            baseLatencyMs = 350,
-            randomJitterMs = 160,
-            packetLossPercent = 7.0,
+            baseLatencyMs = 2000,
+            randomJitterMs = 800,
+            packetLossPercent = 75.0,
             burstInterruptionEnabled = true,
-            burstDurationMs = 1200,
-            burstIntervalSeconds = 10,
+            burstDurationMs = 2500,
+            burstIntervalSeconds = 6,
             direction = ImpairmentDirection.BOTH,
             affectTcp = false
         )

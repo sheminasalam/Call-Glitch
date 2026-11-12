@@ -85,7 +85,7 @@ export default function App() {
           currentPingMs: calculatedPing,
           packetLossRate: activeConfig.packetLossPercent,
           jitterVarianceMs: Math.abs(currentJitter),
-          queueDepth: Math.min(12, Math.floor(calculatedPing / 30)),
+          queueDepth: Math.min(60, Math.floor(calculatedPing / 50)),
           forwardedCount: newForwarded,
           droppedCount: newDropped,
           unselectedAppPingMs: 15 + Math.floor(Math.random() * 4), // Always normal!

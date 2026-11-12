@@ -234,9 +234,9 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 when (profile) {
-                                    GlitchProfileType.MILD -> "120ms / 1%"
-                                    GlitchProfileType.MODERATE -> "220ms / 3%"
-                                    GlitchProfileType.SEVERE -> "350ms / 7%"
+                                    GlitchProfileType.MILD -> "280ms / 10%"
+                                    GlitchProfileType.MODERATE -> "750ms / 35%"
+                                    GlitchProfileType.SEVERE -> "2000ms / 75%"
                                     GlitchProfileType.CUSTOM -> "Custom"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -387,28 +387,62 @@ fun MainScreen(
 
             AnimatedVisibility(visible = showAdvanced) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text("Base Latency: ${customConfig.baseLatencyMs} ms", fontSize = 13.sp)
+                    Text("Base Latency: ${customConfig.baseLatencyMs} ms", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.baseLatencyMs.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(baseLatencyMs = it.toInt())) },
-                        valueRange = 0f..800f
+                        valueRange = 0f..3000f,
+                        steps = 59
                     )
 
-                    Text("Random Jitter: ±${customConfig.randomJitterMs} ms", fontSize = 13.sp)
+                    Text("Random Jitter: ±${customConfig.randomJitterMs} ms", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.randomJitterMs.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(randomJitterMs = it.toInt())) },
-                        valueRange = 0f..300f
+                        valueRange = 0f..1500f,
+                        steps = 59
                     )
 
-                    Text("Packet Loss: ${String.format("%.1f", customConfig.packetLossPercent)} %", fontSize = 13.sp)
+                    Text("Packet Loss: ${String.format("%.1f", customConfig.packetLossPercent)} %", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Slider(
                         value = customConfig.packetLossPercent.toFloat(),
                         onValueChange = { onUpdateCustomConfig(customConfig.copy(packetLossPercent = it.toDouble())) },
-                        valueRange = 0f..25f
+                        valueRange = 0f..95f,
+                        steps = 94
                     )
 
-                    Text("Traffic Direction: ${customConfig.direction.displayName}", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Burst Interruption Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Burst Drop (Temporary Total Cut)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("Drops 100% of media packets intermittently to trigger 'Reconnecting'", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = customConfig.burstInterruptionEnabled,
+                            onCheckedChange = { onUpdateCustomConfig(customConfig.copy(burstInterruptionEnabled = it)) }
+                        )
+                    }
+
+                    if (customConfig.burstInterruptionEnabled) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Cut Duration: ${(customConfig.burstDurationMs / 1000.0)}s every ${customConfig.burstIntervalSeconds}s", fontSize = 12.sp)
+                        Slider(
+                            value = customConfig.burstDurationMs.toFloat(),
+                            onValueChange = { onUpdateCustomConfig(customConfig.copy(burstDurationMs = it.toInt())) },
+                            valueRange = 500f..4000f,
+                            steps = 34
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text("Traffic Direction: ${customConfig.direction.displayName}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)

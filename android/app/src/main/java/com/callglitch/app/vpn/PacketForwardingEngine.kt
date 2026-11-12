@@ -48,8 +48,8 @@ class PacketForwardingEngine(
     // TCP transparent proxy session table: maps (clientPort -> dstIp:dstPort) to a protected Socket session
     private val tcpSessions = ConcurrentHashMap<String, TcpSession>()
 
-    // Bounded packet delay queue for outgoing & incoming impairment (Max 800 packets)
-    private val maxQueueCapacity = 800
+    // Bounded packet delay queue for outgoing & incoming impairment (Max 3000 packets for up to 3000ms latency)
+    private val maxQueueCapacity = 3000
     private val delayQueue = PriorityBlockingQueue<DelayedPacket>(maxQueueCapacity, compareBy { it.scheduledReleaseTime })
 
     // TUN streams
@@ -645,10 +645,12 @@ class PacketForwardingEngine(
     // =========================================================================
 
     private fun shouldDropPacket(): Boolean {
-        // Burst drop simulation
-        if (config.burstInterruptionEnabled) {
-            val nowSeconds = (System.currentTimeMillis() / 1000) % config.burstIntervalSeconds
-            if (nowSeconds < (config.burstDurationMs / 1000.0)) {
+        // Burst drop simulation: completely drops 100% of media packets during the burst cut window
+        if (config.burstInterruptionEnabled && config.burstIntervalSeconds > 0) {
+            val nowMs = System.currentTimeMillis()
+            val cycleMs = config.burstIntervalSeconds * 1000L
+            val cyclePos = nowMs % cycleMs
+            if (cyclePos < config.burstDurationMs) {
                 return true
             }
         }

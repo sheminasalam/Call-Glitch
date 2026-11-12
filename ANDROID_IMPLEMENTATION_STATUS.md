@@ -121,6 +121,19 @@ When the VPN was active, target applications previously had their internet conne
 4. **Zero-Parameter Custom Impairment Passthrough:**
    - *Cause:* When delay is 0ms, jitter is 0ms, and packet loss is 0%, packets are dispatched immediately without entering the delay queue, allowing normal full-speed throughput.
 
+### K. Intensity Scale Recalibration (High-Impact & "Almost Connection Lost")
+- **VoIP Codec Realities:** Modern calling applications (WhatsApp, Google Meet, Zoom) utilize Opus audio codecs with Forward Error Correction (FEC) and Packet Loss Concealment (PLC), alongside WebRTC adaptive jitter buffers. Previously, Mild (1%), Moderate (3%), and Severe (7%) loss were largely concealed by FEC, giving the appearance of fair connectivity even on Severe.
+- **Calibrated Realistic Presets:**
+  - **MILD:** 280ms base latency, ±80ms jitter, 10.0% loss. (Noticeable lag and occasional robotic syllables).
+  - **MODERATE:** 750ms base latency, ±300ms jitter, 35.0% loss. (Severe conversation desync, choppy audio, video resolution degradation).
+  - **SEVERE:** 2000ms base latency, ±800ms jitter, 75.0% loss, plus active burst interruption (drops 100% of packets for 2.5s every 6s). Induces immediate "Reconnecting..." and near-total connection failure.
+- **Expanded Custom Parameter Scales:**
+  - **Base Latency Slider:** Expanded from 0..800ms up to **0..3,000ms** (up to 3 full seconds of delay).
+  - **Random Jitter Slider:** Expanded from 0..300ms up to **0..1,500ms** (exceeds all standard jitter buffers).
+  - **Packet Loss Slider:** Expanded from 0..25% up to **0..95%** (95% loss cuts off almost all audio and video).
+  - **Burst Drop Controls:** Added dedicated toggle and duration slider (0.5s to 4.0s) for intermittent total network blackouts.
+  - **Queue Expansion:** Expanded `PacketForwardingEngine` priority queue capacity to 3,000 packets to comfortably buffer high-latency streams without premature queue drops.
+
 ---
 
 ## 2. Inventory of Files

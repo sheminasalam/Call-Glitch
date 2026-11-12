@@ -80,8 +80,9 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
       return;
     }
 
-    const intervalMs = metrics.activeProfile === 'SEVERE' ? 2200 : metrics.activeProfile === 'MODERATE' ? 3600 : 6000;
-    const freezeDuration = metrics.activeProfile === 'SEVERE' ? 1200 : metrics.activeProfile === 'MODERATE' ? 700 : 300;
+    const isNearDisconnect = metrics.activeProfile === 'SEVERE' || activeConfig.packetLossPercent >= 50;
+    const intervalMs = isNearDisconnect ? 1800 : metrics.activeProfile === 'MODERATE' ? 3200 : 5000;
+    const freezeDuration = isNearDisconnect ? 2200 : metrics.activeProfile === 'MODERATE' ? 1200 : 400;
 
     const interval = setInterval(() => {
       setVideoFreeze(true);
@@ -457,8 +458,8 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
                       <input 
                         type="range" 
                         min={0} 
-                        max={600} 
-                        step={10}
+                        max={3000} 
+                        step={50}
                         value={activeConfig.baseLatencyMs}
                         onChange={e => onUpdateConfig({ ...activeConfig, type: 'CUSTOM', baseLatencyMs: Number(e.target.value) })}
                         className="w-full accent-sky-400 h-1 bg-slate-700 rounded-lg cursor-pointer"
@@ -474,8 +475,8 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
                       <input 
                         type="range" 
                         min={0} 
-                        max={250} 
-                        step={5}
+                        max={1500} 
+                        step={25}
                         value={activeConfig.jitterMs}
                         onChange={e => onUpdateConfig({ ...activeConfig, type: 'CUSTOM', jitterMs: Number(e.target.value) })}
                         className="w-full accent-sky-400 h-1 bg-slate-700 rounded-lg cursor-pointer"
@@ -485,19 +486,51 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
                     {/* Loss */}
                     <div>
                       <div className="flex justify-between text-[11px] mb-1">
-                        <span className="text-slate-300">Packet Loss</span>
-                        <span className="font-mono text-sky-400">{activeConfig.packetLossPercent}%</span>
+                        <span className="text-slate-300">Packet Loss (Up to 95%)</span>
+                        <span className="font-mono text-sky-400 font-bold">{activeConfig.packetLossPercent}%</span>
                       </div>
                       <input 
                         type="range" 
                         min={0} 
-                        max={15} 
-                        step={0.5}
+                        max={95} 
+                        step={1}
                         value={activeConfig.packetLossPercent}
                         onChange={e => onUpdateConfig({ ...activeConfig, type: 'CUSTOM', packetLossPercent: Number(e.target.value) })}
                         className="w-full accent-sky-400 h-1 bg-slate-700 rounded-lg cursor-pointer"
                       />
                     </div>
+
+                    {/* Burst Drop Switch */}
+                    <div className="flex items-center justify-between pt-1">
+                      <div>
+                        <span className="text-[11px] font-medium text-slate-300">Burst Drop (Temporary Total Cut)</span>
+                        <p className="text-[9px] text-red-400">100% loss bursts to trigger "Reconnecting"</p>
+                      </div>
+                      <button
+                        onClick={() => onUpdateConfig({ ...activeConfig, type: 'CUSTOM', burstInterruptionEnabled: !activeConfig.burstInterruptionEnabled })}
+                        className={`w-9 h-4.5 rounded-full p-0.5 transition-colors ${activeConfig.burstInterruptionEnabled ? 'bg-red-500' : 'bg-slate-700'}`}
+                      >
+                        <div className={`w-3.5 h-3.5 rounded-full bg-white transition-transform ${activeConfig.burstInterruptionEnabled ? 'translate-x-4.5' : ''}`} />
+                      </button>
+                    </div>
+
+                    {activeConfig.burstInterruptionEnabled && (
+                      <div>
+                        <div className="flex justify-between text-[10px] mb-1">
+                          <span className="text-slate-300">Cut Duration</span>
+                          <span className="font-mono text-red-400">{(activeConfig.burstDurationMs / 1000).toFixed(1)}s / {activeConfig.burstIntervalSeconds}s</span>
+                        </div>
+                        <input 
+                          type="range" 
+                          min={500} 
+                          max={4000} 
+                          step={250}
+                          value={activeConfig.burstDurationMs}
+                          onChange={e => onUpdateConfig({ ...activeConfig, type: 'CUSTOM', burstDurationMs: Number(e.target.value) })}
+                          className="w-full accent-red-400 h-1 bg-slate-700 rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    )}
 
                     {/* TCP Impairment Switch */}
                     <div className="flex items-center justify-between pt-1">
