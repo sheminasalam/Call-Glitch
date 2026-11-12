@@ -2,6 +2,7 @@ package com.callglitch.app.vpn
 
 import android.app.Notification
 import android.app.PendingIntent
+import android.app.Service.STOP_FOREGROUND_REMOVE
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager

@@ -23,6 +23,7 @@ The Android Studio project is located in the **`android/`** directory.
 android/
 ├── build.gradle.kts                 # Root Gradle build script
 ├── settings.gradle.kts               # Gradle settings registering :app module
+├── gradle.properties                # AndroidX enabled & JVM heap configurations
 ├── gradle/
 │   ├── libs.versions.toml           # Version catalog (AGP, Kotlin, Compose, Coroutines)
 │   └── wrapper/

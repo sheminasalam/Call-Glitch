@@ -164,6 +164,14 @@ app/build/
   );
 
   zip.file(
+    'gradle.properties',
+    `android.useAndroidX=true
+org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+kotlin.code.style=official
+`
+  );
+
+  zip.file(
     'app/proguard-rules.pro',
     `# Call Glitch Proguard & R8 Rules
 -keepattributes *Annotation*

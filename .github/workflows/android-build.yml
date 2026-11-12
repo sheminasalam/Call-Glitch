@@ -27,6 +27,7 @@ jobs:
         run: |
           echo "Validating Android Studio project files in android/..."
           test -f android/settings.gradle.kts || { echo "Missing android/settings.gradle.kts"; exit 1; }
+          test -f android/gradle.properties || { echo "Missing android/gradle.properties"; exit 1; }
           test -f android/gradlew || { echo "Missing android/gradlew"; exit 1; }
           test -f android/gradle/wrapper/gradle-wrapper.jar || { echo "Missing android/gradle/wrapper/gradle-wrapper.jar"; exit 1; }
           test -f android/app/build.gradle.kts || { echo "Missing android/app/build.gradle.kts"; exit 1; }

@@ -36,6 +36,15 @@ include(":app")
 `
   },
   {
+    path: 'gradle.properties',
+    language: 'properties',
+    description: 'Gradle properties enabling AndroidX and JVM options',
+    content: `android.useAndroidX=true
+org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+kotlin.code.style=official
+`
+  },
+  {
     path: 'build.gradle.kts',
     language: 'kotlin',
     description: 'Top-level root build script with Kotlin and Android Gradle plugins',

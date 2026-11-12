@@ -12,13 +12,20 @@
 - The Android project has been moved from being an embedded TypeScript string array into a real, directly buildable Android Studio project in the **`android/`** directory.
 - Android Studio can now directly open `android/` with full IDE support, code completion, and native Gradle tooling.
 
-### B. Resolution of GitHub Actions CI Failure
-- **Failed Run Reference:** Run ID `43164605355` (November 12, 2026).
-- **Exact Root Cause:** The workflow attempted `test -f settings.gradle.kts` and `./gradlew assembleDebug` at the repository root, where only the React/Vite web application resided. The Android Gradle project existed only in virtual TypeScript string templates.
-- **Resolution:**
-  - Placed the complete Android Gradle project in `android/`.
-  - Updated `.github/workflows/android-build.yml` to set `working-directory: android` and check `android/settings.gradle.kts`, `android/gradlew`, `android/gradle/wrapper/gradle-wrapper.jar`, and `android/app/build.gradle.kts`.
-  - Decoupled the CI into two independent jobs: `android-build` (for Android unit tests & debug APK assembly) and `web-build` (for Bun dependency installation, linting, and Vite production bundle).
+### B. Resolution of GitHub Actions CI Failures
+- **Initial Failed Run:** Run ID `43164605355` (November 12, 2026).
+  - *Root Cause:* Workflow executed `test -f settings.gradle.kts` at repository root where only web app files existed.
+  - *Resolution:* Moved Android project into `android/` and updated `.github/workflows/android-build.yml`.
+- **Subsequent Run Failure:** Run ID `43167498829` (Commit `b0365be7`).
+  - *Root Cause:* Task `:app:checkDebugAarMetadata` failed with:
+    `Configuration :app:debugRuntimeClasspath contains AndroidX dependencies, but the android.useAndroidX property is not enabled.`
+  - *Resolution:* Created `android/gradle.properties` with:
+    ```properties
+    android.useAndroidX=true
+    org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+    kotlin.code.style=official
+    ```
+    This instructs AGP to treat all dependencies as AndroidX-enabled. No dependency or plugin versions were modified.
 
 ### C. Official Gradle Wrapper Integration
 - Replaced the previous makeshift script with the official Gradle **8.10.2** wrapper:

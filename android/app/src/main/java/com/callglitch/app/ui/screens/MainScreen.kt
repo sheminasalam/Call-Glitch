@@ -381,6 +381,73 @@ fun MainScreen(
                     }
                 }
             }
+
+            // 7. App Selection Dialog
+            if (showAppDialog) {
+                val availableApps = listOf(
+                    "com.whatsapp" to "WhatsApp",
+                    "org.telegram.messenger" to "Telegram",
+                    "com.google.android.apps.tachyon" to "Google Meet",
+                    "us.zoom.videomeetings" to "Zoom",
+                    "com.instagram.android" to "Instagram",
+                    "com.facebook.orca" to "Messenger",
+                    "org.thoughtcrime.securesms" to "Signal",
+                    "com.discord" to "Discord"
+                )
+                var tempSelected by remember { mutableStateOf(selectedPackages) }
+
+                AlertDialog(
+                    onDismissRequest = { showAppDialog = false },
+                    title = { Text("Target Calling Applications", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                            Text(
+                                "Selected apps route through the local VPN interface. Non-selected apps bypass the VPN.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            availableApps.forEach { (pkg, name) ->
+                                val isChecked = tempSelected.contains(pkg)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            tempSelected = if (isChecked) tempSelected - pkg else tempSelected + pkg
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = isChecked,
+                                        onCheckedChange = { checked ->
+                                            tempSelected = if (checked) tempSelected + pkg else tempSelected - pkg
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                        Text(pkg, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            onUpdateSelectedApps(tempSelected)
+                            showAppDialog = false
+                        }) {
+                            Text("Save")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showAppDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
         }
     }
 }
