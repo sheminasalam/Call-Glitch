@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.CallGlitch" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/primary_variant</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+    </style>
+</resources>

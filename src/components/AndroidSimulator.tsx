@@ -46,9 +46,6 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
   // Simulator UI view modes
   const [phoneScreen, setPhoneScreen] = useState<'app' | 'call'>('call');
   const [isShadeOpen, setIsShadeOpen] = useState(false);
-  const [bubbleEnabled, setBubbleEnabled] = useState(true);
-  const [bubblePos, setBubblePos] = useState({ x: 260, y: 180 });
-  const [isDraggingBubble, setIsDraggingBubble] = useState(false);
   const [showAppsModal, setShowAppsModal] = useState(false);
   const [selectedApps, setSelectedApps] = useState<string[]>(['com.whatsapp', 'org.telegram.messenger', 'com.google.android.apps.tachyon']);
   const [showAdvancedInApp, setShowAdvancedInApp] = useState(false);
@@ -367,15 +364,12 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
               <div className="mt-3 p-3 rounded-2xl bg-slate-800/40 border border-slate-700/60 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-semibold text-slate-200">Floating Control Bubble</span>
-                    <p className="text-[10px] text-slate-400">Draggable overlay during video calls</p>
+                    <span className="text-xs font-semibold text-slate-200">Quick Settings Tile</span>
+                    <p className="text-[10px] text-slate-400">Primary in-call 1-tap control (no overlays)</p>
                   </div>
-                  <button
-                    onClick={() => setBubbleEnabled(!bubbleEnabled)}
-                    className={`w-10 h-5 rounded-full p-0.5 transition-colors ${bubbleEnabled ? 'bg-sky-500' : 'bg-slate-700'}`}
-                  >
-                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${bubbleEnabled ? 'translate-x-5' : ''}`} />
-                  </button>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">
+                    Primary
+                  </span>
                 </div>
 
                 <div className="h-px bg-slate-800" />
@@ -488,22 +482,6 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
             </div>
           )}
 
-          {/* FLOATING CONTROL BUBBLE (Available on-screen during calls) */}
-          {bubbleEnabled && (
-            <div 
-              style={{ left: `${bubblePos.x}px`, top: `${bubblePos.y}px` }}
-              onMouseDown={() => setIsDraggingBubble(true)}
-              onClick={() => onToggleGlitch(!metrics.isGlitchActive)}
-              className={`absolute z-30 w-12 h-12 rounded-full flex items-center justify-center cursor-move shadow-2xl transition-transform active:scale-90 border-2 select-none ${
-                metrics.isGlitchActive 
-                  ? 'bg-red-600 border-white text-white shadow-red-600/50 animate-pulse' 
-                  : 'bg-slate-800/90 border-sky-400 text-sky-400 backdrop-blur-md'
-              }`}
-              title="Drag me! Single-tap toggles Call Glitch. Long press to change profile."
-            >
-              <Flame className="w-5 h-5" />
-            </div>
-          )}
 
           {/* PULL-DOWN QUICK SETTINGS & NOTIFICATION SHADE */}
           {isShadeOpen && (

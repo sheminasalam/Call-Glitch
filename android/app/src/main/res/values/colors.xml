@@ -1,0 +1,8 @@
+<resources>
+    <color name="primary">#0EA5E9</color>
+    <color name="primary_variant">#0284C7</color>
+    <color name="glitch_red">#EF4444</color>
+    <color name="glitch_amber">#F59E0B</color>
+    <color name="glitch_green">#10B981</color>
+    <color name="launcher_bg">#0F172A</color>
+</resources>

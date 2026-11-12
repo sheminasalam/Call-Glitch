@@ -60,6 +60,7 @@ composeBom = "2024.10.01"
 datastore = "1.1.1"
 coroutines = "1.9.0"
 materialIconsExtended = "1.7.5"
+junit = "4.13.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -75,11 +76,25 @@ androidx-material-icons-extended = { group = "androidx.compose.material", name =
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+`
+  },
+  {
+    path: 'gradle/wrapper/gradle-wrapper.properties',
+    language: 'properties',
+    description: 'Gradle wrapper properties pointing to official Gradle 8.10.2 binary distribution',
+    content: `distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
 `
   },
   {
@@ -159,6 +174,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
+    testImplementation(libs.junit)
     debugImplementation(libs.androidx.ui.tooling)
 }
 `
@@ -166,7 +182,7 @@ dependencies {
   {
     path: 'app/src/main/AndroidManifest.xml',
     language: 'xml',
-    description: 'Android manifest declaring VpnService, TileService, OverlayService & permissions',
+    description: 'Android manifest declaring VpnService, TileService & permissions (no overlay)',
     content: `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
@@ -180,9 +196,6 @@ dependencies {
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- Optional Floating Control Bubble permission -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Query installed apps to select calling apps -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -226,7 +239,7 @@ dependencies {
                 android:value="Local rootless per-application network impairment for call connection testing" />
         </service>
 
-        <!-- Android Quick Settings Tile for In-Call 1-Tap Toggle -->
+        <!-- Android Quick Settings Tile for In-Call 1-Tap Toggle (Primary Control) -->
         <service
             android:name=".tile.GlitchTileService"
             android:exported="true"
@@ -237,11 +250,6 @@ dependencies {
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-
-        <!-- Optional Floating Bubble Overlay Service -->
-        <service
-            android:name=".overlay.OverlayBubbleService"
-            android:exported="false" />
 
     </application>
 
@@ -325,7 +333,7 @@ data class GlitchConfig(
     val burstIntervalSeconds: Int = 12,
     val direction: ImpairmentDirection = ImpairmentDirection.BOTH,
     val affectTcp: Boolean = false,
-    val timeoutSeconds: Int = 0 // 0 means no auto-timeout
+    val timeoutSeconds: Int = 0
 ) {
     companion object {
         val MILD = GlitchConfig(
@@ -381,7 +389,7 @@ data class SelectedApp(
   {
     path: 'app/src/main/java/com/callglitch/app/data/GlitchSettingsRepository.kt',
     language: 'kotlin',
-    description: 'DataStore persistence for user profiles, app selections, overlay position, and timeouts',
+    description: 'DataStore persistence for profiles, app selection, and auto-timeout (no overlay)',
     content: `package com.callglitch.app.data
 
 import android.content.Context
@@ -394,7 +402,6 @@ import com.callglitch.app.model.ImpairmentDirection
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
-import java.io.IOException
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "call_glitch_settings")
 
@@ -410,9 +417,6 @@ class GlitchSettingsRepository(private val context: Context) {
         val CUSTOM_AFFECT_TCP = booleanPreferencesKey("custom_affect_tcp")
         val SELECTED_PACKAGES = stringSetPreferencesKey("selected_packages")
         val AUTO_TIMEOUT_SECONDS = intPreferencesKey("auto_timeout_seconds")
-        val FLOATING_BUBBLE_ENABLED = booleanPreferencesKey("floating_bubble_enabled")
-        val BUBBLE_X = intPreferencesKey("bubble_x")
-        val BUBBLE_Y = intPreferencesKey("bubble_y")
     }
 
     val defaultCallingPackages = setOf(
@@ -420,7 +424,7 @@ class GlitchSettingsRepository(private val context: Context) {
         "org.telegram.messenger",
         "com.instagram.android",
         "com.facebook.orca",
-        "com.google.android.apps.tachyon", // Google Meet
+        "com.google.android.apps.tachyon",
         "us.zoom.videomeetings"
     )
 
@@ -440,7 +444,11 @@ class GlitchSettingsRepository(private val context: Context) {
                 randomJitterMs = prefs[PreferencesKeys.CUSTOM_JITTER] ?: 100,
                 packetLossPercent = prefs[PreferencesKeys.CUSTOM_LOSS] ?: 4.0,
                 burstInterruptionEnabled = prefs[PreferencesKeys.CUSTOM_BURST_ENABLED] ?: false,
-                direction = ImpairmentDirection.valueOf(prefs[PreferencesKeys.CUSTOM_DIRECTION] ?: ImpairmentDirection.BOTH.name),
+                direction = try {
+                    ImpairmentDirection.valueOf(prefs[PreferencesKeys.CUSTOM_DIRECTION] ?: ImpairmentDirection.BOTH.name)
+                } catch (e: Exception) {
+                    ImpairmentDirection.BOTH
+                },
                 affectTcp = prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] ?: false
             )
         }
@@ -454,10 +462,6 @@ class GlitchSettingsRepository(private val context: Context) {
     val autoTimeoutSecondsFlow: Flow<Int> = context.dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { prefs -> prefs[PreferencesKeys.AUTO_TIMEOUT_SECONDS] ?: 0 }
-
-    val floatingBubbleEnabledFlow: Flow<Boolean> = context.dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { prefs -> prefs[PreferencesKeys.FLOATING_BUBBLE_ENABLED] ?: false }
 
     suspend fun setActiveProfile(profile: GlitchProfileType) {
         context.dataStore.edit { it[PreferencesKeys.ACTIVE_PROFILE] = profile.name }
@@ -480,17 +484,6 @@ class GlitchSettingsRepository(private val context: Context) {
 
     suspend fun setAutoTimeoutSeconds(seconds: Int) {
         context.dataStore.edit { it[PreferencesKeys.AUTO_TIMEOUT_SECONDS] = seconds }
-    }
-
-    suspend fun setFloatingBubbleEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[PreferencesKeys.FLOATING_BUBBLE_ENABLED] = enabled }
-    }
-
-    suspend fun saveBubblePosition(x: Int, y: Int) {
-        context.dataStore.edit { prefs ->
-            prefs[PreferencesKeys.BUBBLE_X] = x
-            prefs[PreferencesKeys.BUBBLE_Y] = y
-        }
     }
 }
 `
@@ -526,8 +519,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.IOException
 
 class CallGlitchVpnService : VpnService() {
@@ -639,7 +630,6 @@ class CallGlitchVpnService : VpnService() {
                 _isRunning.value = true
                 GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
 
-                // Schedule auto-timeout if configured
                 if (timeoutSec > 0) {
                     timeoutJob?.cancel()
                     timeoutJob = serviceScope.launch {
@@ -649,7 +639,6 @@ class CallGlitchVpnService : VpnService() {
                     }
                 }
 
-                // Start watchdog for stalled forwarding
                 startWatchdog()
 
             } catch (e: Exception) {
@@ -672,7 +661,6 @@ class CallGlitchVpnService : VpnService() {
             setSession("CallGlitch: \${config.profileType.displayName}")
             setBlocking(true)
 
-            // CRITICAL REQUIREMENT 1: Use addAllowedApplication() to isolate calling apps
             var allowedCount = 0
             val pm = packageManager
             for (pkg in selectedApps) {
@@ -686,7 +674,6 @@ class CallGlitchVpnService : VpnService() {
                 }
             }
 
-            // Fallback: If no selected apps are currently installed, do not block everything
             if (allowedCount == 0) {
                 Log.w(TAG, "No valid apps selected to route. Allowing own package to prevent blackhole.")
                 addAllowedApplication(packageName)
@@ -697,7 +684,6 @@ class CallGlitchVpnService : VpnService() {
         val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null")
         vpnInterface = pfd
 
-        // Initialize user-space forwarding engine with impairment
         forwardingEngine = PacketForwardingEngine(
             vpnService = this,
             tunFd = pfd.fileDescriptor,
@@ -788,7 +774,6 @@ class CallGlitchVpnService : VpnService() {
         watchdogJob?.cancel()
 
         try {
-            // STOP priority: Immediately shutdown forwarding engine without waiting for queued packets
             forwardingEngine?.stop()
             forwardingEngine = null
 
@@ -823,393 +808,12 @@ class CallGlitchVpnService : VpnService() {
 `
   },
   {
-    path: 'app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt',
-    language: 'kotlin',
-    description: 'User-space packet router with bounded queues, protect() sockets and reverse impairment',
-    content: `package com.callglitch.app.vpn
-
-import android.net.Network
-import android.net.VpnService
-import android.util.Log
-import com.callglitch.app.model.GlitchConfig
-import com.callglitch.app.model.ImpairmentDirection
-import kotlinx.coroutines.*
-import java.io.FileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.random.Random
-
-/**
- * User-space TCP/UDP packet forwarding engine.
- * Reads IP packets from TUN, enforces impairment policies, and routes UDP/TCP through protected direct sockets.
- */
-class PacketForwardingEngine(
-    private val vpnService: VpnService,
-    private val tunFd: FileDescriptor,
-    private var config: GlitchConfig,
-    private val onStatsUpdate: (forwarded: Long, dropped: Long) -> Unit
-) {
-    private val isRunning = AtomicBoolean(false)
-    private val lastHeartbeat = AtomicLong(System.currentTimeMillis())
-    private val forwardedCount = AtomicLong(0)
-    private val droppedCount = AtomicLong(0)
-
-    private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // UDP NAT session table: maps client (srcIp:srcPort -> dstIp:dstPort) to a protected DatagramSocket session
-    private val udpSessions = ConcurrentHashMap<String, UdpSession>()
-
-    // Bounded packet delay queue for outgoing & incoming impairment (Max 500 packets)
-    private val maxQueueCapacity = 500
-    private val delayQueue = PriorityBlockingQueue<DelayedPacket>(maxQueueCapacity, compareBy { it.scheduledReleaseTime })
-
-    // Tun streams
-    private val tunIn = FileInputStream(tunFd)
-    private val tunOut = FileOutputStream(tunFd)
-
-    companion object {
-        private const val TAG = "PacketForwardingEngine"
-        private const val BUFFER_SIZE = 32767
-    }
-
-    fun start() {
-        if (!isRunning.compareAndSet(false, true)) return
-
-        // 1. Thread: TUN Packet Reader (Outgoing traffic from App)
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (isRunning.get()) {
-                try {
-                    val length = tunIn.read(buffer)
-                    if (length > 0) {
-                        lastHeartbeat.set(System.currentTimeMillis())
-                        val packetData = buffer.copyOf(length)
-                        handleOutgoingTunPacket(packetData)
-                    }
-                } catch (e: Exception) {
-                    if (isRunning.get()) {
-                        Log.e(TAG, "Error reading from TUN: \${e.message}")
-                    }
-                    break
-                }
-            }
-        }
-
-        // 2. Thread: Delay Queue Dispatcher (Releases impaired packets when their delay expires)
-        engineScope.launch {
-            while (isRunning.get()) {
-                try {
-                    val head = delayQueue.peek()
-                    val now = System.currentTimeMillis()
-                    if (head != null && head.scheduledReleaseTime <= now) {
-                        val packet = delayQueue.poll()
-                        if (packet != null) {
-                            dispatchPacket(packet)
-                        }
-                    } else if (head != null) {
-                        val waitTime = (head.scheduledReleaseTime - now).coerceAtLeast(1)
-                        delay(waitTime)
-                    } else {
-                        delay(2)
-                    }
-                } catch (e: Exception) {
-                    delay(5)
-                }
-            }
-        }
-
-        // 3. Periodic NAT Cleanup
-        engineScope.launch {
-            while (isRunning.get()) {
-                delay(30000L)
-                cleanStaleSessions()
-            }
-        }
-    }
-
-    fun updateConfig(newConfig: GlitchConfig) {
-        this.config = newConfig
-        Log.i(TAG, "Impairment configuration updated: \${newConfig.profileType.displayName}")
-    }
-
-    fun onUnderlyingNetworkChanged(network: Network) {
-        // Re-protect open sockets on network migration
-        udpSessions.values.forEach { session ->
-            try {
-                vpnService.protect(session.socket)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to re-protect socket: \${e.message}")
-            }
-        }
-    }
-
-    private fun handleOutgoingTunPacket(data: ByteArray) {
-        if (data.isEmpty()) return
-        val version = (data[0].toInt() shr 4) and 0x0F
-
-        if (version != 4 && version != 6) return // Only IPv4 and IPv6
-
-        val protocol = if (version == 4) data[9].toInt() and 0xFF else data[6].toInt() and 0xFF
-
-        // Check whether impairment should apply
-        val isUdp = protocol == 17
-        val isTcp = protocol == 6
-
-        val shouldImpair = (isUdp || (isTcp && config.affectTcp)) &&
-                (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.OUTGOING)
-
-        if (shouldImpair) {
-            // Apply packet loss check
-            if (shouldDropPacket()) {
-                val dropped = droppedCount.incrementAndGet()
-                onStatsUpdate(forwardedCount.get(), dropped)
-                return
-            }
-
-            // Apply latency + jitter
-            val delayMs = calculateDelay()
-            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
-                val scheduledTime = System.currentTimeMillis() + delayMs
-                delayQueue.offer(DelayedPacket(data, scheduledTime, isIncoming = false, protocol = protocol))
-                return
-            }
-        }
-
-        // Forward immediately if no delay
-        forwardOutgoingDirect(data, protocol)
-    }
-
-    private fun forwardOutgoingDirect(data: ByteArray, protocol: Int) {
-        if (protocol == 17) { // UDP
-            forwardUdpPacket(data)
-        } else {
-            // Non-UDP or bypass TCP packet
-            forwardRawPacket(data)
-        }
-    }
-
-    private fun forwardUdpPacket(packet: ByteArray) {
-        try {
-            // Parse IPv4 header to extract source/dest IP and ports
-            val ipHeaderLen = (packet[0].toInt() and 0x0F) * 4
-            val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
-            val dstIp = InetAddress.getByAddress(packet.copyOfRange(16, 20))
-
-            val srcPort = ((packet[ipHeaderLen].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 1].toInt() and 0xFF)
-            val dstPort = ((packet[ipHeaderLen + 2].toInt() and 0xFF) shl 8) or (packet[ipHeaderLen + 3].toInt() and 0xFF)
-
-            val udpPayload = packet.copyOfRange(ipHeaderLen + 8, packet.size)
-
-            val sessionKey = "\$srcIp:\$srcPort->\$dstIp:\$dstPort"
-            val session = udpSessions.computeIfAbsent(sessionKey) {
-                createUdpSession(srcIp, srcPort, dstIp, dstPort)
-            }
-
-            session.lastActivity = System.currentTimeMillis()
-            val datagram = DatagramPacket(udpPayload, udpPayload.size, dstIp, dstPort)
-            session.socket.send(datagram)
-
-            val forwarded = forwardedCount.incrementAndGet()
-            if (forwarded % 20L == 0L) {
-                onStatsUpdate(forwarded, droppedCount.get())
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "UDP forward error: \${e.message}")
-        }
-    }
-
-    private fun createUdpSession(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int): UdpSession {
-        val socket = DatagramSocket()
-        // CRITICAL: Protect socket from VPN routing loops
-        vpnService.protect(socket)
-
-        val session = UdpSession(socket, srcIp, srcPort, dstIp, dstPort, System.currentTimeMillis())
-
-        // Start reverse listener for incoming UDP packets from Internet
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (isRunning.get() && !socket.isClosed) {
-                try {
-                    val incoming = DatagramPacket(buffer, buffer.size)
-                    socket.receive(incoming)
-                    handleIncomingUdpPacket(session, incoming.data.copyOf(incoming.length))
-                } catch (e: Exception) {
-                    break
-                }
-            }
-        }
-        return session
-    }
-
-    private fun handleIncomingUdpPacket(session: UdpSession, payload: ByteArray) {
-        val shouldImpair = (config.direction == ImpairmentDirection.BOTH || config.direction == ImpairmentDirection.INCOMING)
-
-        if (shouldImpair) {
-            if (shouldDropPacket()) {
-                val dropped = droppedCount.incrementAndGet()
-                onStatsUpdate(forwardedCount.get(), dropped)
-                return
-            }
-
-            val delayMs = calculateDelay()
-            if (delayMs > 0 && delayQueue.size < maxQueueCapacity) {
-                val scheduledTime = System.currentTimeMillis() + delayMs
-                val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
-                delayQueue.offer(DelayedPacket(syntheticIpPacket, scheduledTime, isIncoming = true, protocol = 17))
-                return
-            }
-        }
-
-        val syntheticIpPacket = synthesizeIpUdpPacket(session.dstIp, session.dstPort, session.srcIp, session.srcPort, payload)
-        writeToTun(syntheticIpPacket)
-    }
-
-    private fun synthesizeIpUdpPacket(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int, payload: ByteArray): ByteArray {
-        val ipLen = 20
-        val udpLen = 8 + payload.size
-        val totalLen = ipLen + udpLen
-        val packet = ByteBuffer.allocate(totalLen)
-
-        // IPv4 Header
-        packet.put(0x45.toByte()) // Version 4, IHL 5
-        packet.put(0x00.toByte()) // DSCP / ECN
-        packet.putShort(totalLen.toShort())
-        packet.putShort(Random.nextInt(65535).toShort()) // ID
-        packet.putShort(0x4000.toShort()) // Flags: Don't Fragment
-        packet.put(64.toByte()) // TTL
-        packet.put(17.toByte()) // Protocol: UDP
-        packet.putShort(0) // Checksum placeholder
-        packet.put(srcIp.address)
-        packet.put(dstIp.address)
-
-        // UDP Header
-        packet.putShort(srcPort.toShort())
-        packet.putShort(dstPort.toShort())
-        packet.putShort(udpLen.toShort())
-        packet.putShort(0) // UDP Checksum optional in IPv4
-
-        // Payload
-        packet.put(payload)
-
-        return packet.array()
-    }
-
-    private fun writeToTun(data: ByteArray) {
-        try {
-            synchronized(tunOut) {
-                tunOut.write(data)
-                tunOut.flush()
-            }
-            forwardedCount.incrementAndGet()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error writing to TUN: \${e.message}")
-        }
-    }
-
-    private fun dispatchPacket(packet: DelayedPacket) {
-        if (packet.isIncoming) {
-            writeToTun(packet.data)
-        } else {
-            forwardOutgoingDirect(packet.data, packet.protocol)
-        }
-    }
-
-    private fun forwardRawPacket(data: ByteArray) {
-        // TCP or ICMP pass-through via direct protected socket channel
-        forwardedCount.incrementAndGet()
-    }
-
-    private fun shouldDropPacket(): Boolean {
-        // Burst drop simulation
-        if (config.burstInterruptionEnabled) {
-            val nowSeconds = (System.currentTimeMillis() / 1000) % config.burstIntervalSeconds
-            if (nowSeconds < (config.burstDurationMs / 1000.0)) {
-                return true
-            }
-        }
-
-        // Statistical loss
-        if (config.packetLossPercent <= 0.0) return false
-        val roll = Random.nextDouble(100.0)
-        return roll < config.packetLossPercent
-    }
-
-    private fun calculateDelay(): Long {
-        val base = config.baseLatencyMs.toLong()
-        val jitter = config.randomJitterMs
-        if (jitter <= 0) return base
-        val randomOffset = Random.nextInt(-jitter, jitter + 1)
-        return (base + randomOffset).coerceAtLeast(0)
-    }
-
-    private fun cleanStaleSessions() {
-        val now = System.currentTimeMillis()
-        val it = udpSessions.entries.iterator()
-        while (it.hasNext()) {
-            val entry = it.next()
-            if (now - entry.value.lastActivity > 60000L) { // 60s idle timeout
-                try {
-                    entry.value.socket.close()
-                } catch (e: Exception) {}
-                it.remove()
-            }
-        }
-    }
-
-    fun isHealthy(): Boolean {
-        return (System.currentTimeMillis() - lastHeartbeat.get()) < 15000L
-    }
-
-    fun stop() {
-        isRunning.set(false)
-        // Clear delayed packets immediately
-        delayQueue.clear()
-
-        // Close sockets
-        udpSessions.values.forEach { session ->
-            try { session.socket.close() } catch (e: Exception) {}
-        }
-        udpSessions.clear()
-
-        try { tunIn.close() } catch (e: Exception) {}
-        try { tunOut.close() } catch (e: Exception) {}
-
-        engineScope.cancel()
-    }
-
-    private data class DelayedPacket(
-        val data: ByteArray,
-        val scheduledReleaseTime: Long,
-        val isIncoming: Boolean,
-        val protocol: Int
-    )
-
-    private data class UdpSession(
-        val socket: DatagramSocket,
-        val srcIp: InetAddress,
-        val srcPort: Int,
-        val dstIp: InetAddress,
-        val dstPort: Int,
-        var lastActivity: Long
-    )
-}
-`
-  },
-  {
     path: 'app/src/main/java/com/callglitch/app/tile/GlitchTileService.kt',
     language: 'kotlin',
-    description: 'Android Quick Settings TileService for zero-leaving in-call 1-tap activation & toggle',
+    description: 'Android Quick Settings TileService for zero-leaving in-call 1-tap activation & toggle (Primary Control)',
     content: `package com.callglitch.app.tile
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
@@ -1225,10 +829,6 @@ import com.callglitch.app.vpn.CallGlitchVpnService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
-/**
- * Native Android TileService enabling quick activation from the notification shade
- * while the user is inside an ongoing WhatsApp, Telegram, or Zoom call.
- */
 class GlitchTileService : TileService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -1238,9 +838,9 @@ class GlitchTileService : TileService() {
 
         fun requestTileUpdate(context: Context) {
             try {
-                requestListeningState(context, android.content.ComponentName(context, GlitchTileService::class.java))
+                requestListeningState(context, ComponentName(context, GlitchTileService::class.java))
             } catch (e: Exception) {
-                Log.w(TAG, "Could not request listening state: \${e.message}")
+                Log.w(TAG, "Could not request tile listening state: \${e.message}")
             }
         }
     }
@@ -1255,24 +855,21 @@ class GlitchTileService : TileService() {
         val isCurrentlyActive = CallGlitchVpnService.isRunning.value
 
         if (isCurrentlyActive) {
-            // STOP immediately
-            Log.i(TAG, "Tile clicked while ACTIVE -> Stopping Call Glitch immediately.")
+            Log.i(TAG, "Tile tapped while ACTIVE -> Stopping Call Glitch immediately.")
             CallGlitchVpnService.stopService(this)
         } else {
-            // Check if VpnService permission is prepared
             val prepareIntent = VpnService.prepare(this)
             if (prepareIntent != null) {
-                // Not yet prepared -> Cannot silent-start without permission. Open main activity to authorize.
+                Log.w(TAG, "VPN permission not prepared. Launching authorization.")
                 prepareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivityAndCollapse(prepareIntent)
                 return
             }
 
-            // Prepared -> Start the VPN immediately using the selected profile
             serviceScope.launch {
                 val repo = (application as CallGlitchApplication).settingsRepository
                 val profile = repo.activeProfileFlow.first()
-                Log.i(TAG, "Tile clicked while INACTIVE -> Starting Call Glitch with profile: \$profile")
+                Log.i(TAG, "Tile tapped while INACTIVE -> Starting Call Glitch with profile: \$profile")
                 CallGlitchVpnService.startService(this@GlitchTileService, profile)
             }
         }
@@ -1285,14 +882,14 @@ class GlitchTileService : TileService() {
 
         if (isActive) {
             tile.state = Tile.STATE_ACTIVE
-            tile.label = "Call Glitch"
+            tile.label = getString(R.string.tile_name)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 tile.subtitle = "\${profile.displayName} Active"
             }
             tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_glitch_active)
         } else {
             tile.state = Tile.STATE_INACTIVE
-            tile.label = "Call Glitch"
+            tile.label = getString(R.string.tile_name)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 tile.subtitle = "Tap to Impair"
             }
@@ -1310,186 +907,23 @@ class GlitchTileService : TileService() {
 `
   },
   {
-    path: 'app/src/main/java/com/callglitch/app/overlay/OverlayBubbleService.kt',
-    language: 'kotlin',
-    description: 'Draggable floating overlay bubble with single-tap toggle and long-press profile switcher',
-    content: `package com.callglitch.app.overlay
-
-import android.app.Service
-import android.content.Context
-import android.content.Intent
-import android.graphics.PixelFormat
-import android.os.Build
-import android.os.IBinder
-import android.provider.Settings
-import android.view.*
-import android.widget.ImageView
-import android.widget.Toast
-import com.callglitch.app.CallGlitchApplication
-import com.callglitch.app.R
-import com.callglitch.app.model.GlitchProfileType
-import com.callglitch.app.vpn.CallGlitchVpnService
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
-
-class OverlayBubbleService : Service() {
-
-    private var windowManager: WindowManager? = null
-    private var bubbleView: View? = null
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    companion object {
-        fun start(context: Context) {
-            if (Settings.canDrawOverlays(context)) {
-                context.startService(Intent(context, OverlayBubbleService::class.java))
-            }
-        }
-
-        fun stop(context: Context) {
-            context.stopService(Intent(context, OverlayBubbleService::class.java))
-        }
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        if (!Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return
-        }
-        setupBubble()
-    }
-
-    private fun setupBubble() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val inflater = LayoutInflater.from(this)
-        bubbleView = inflater.inflate(R.layout.layout_floating_bubble, null)
-
-        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 30
-            y = 200
-        }
-
-        val bubbleIcon = bubbleView?.findViewById<ImageView>(R.id.bubble_icon)
-
-        // Touch & Drag listener
-        var initialX = 0
-        var initialY = 0
-        var initialTouchX = 0f
-        var initialTouchY = 0f
-        var isClick = true
-
-        bubbleView?.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    initialX = params.x
-                    initialY = params.y
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
-                    isClick = true
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - initialTouchX).toInt()
-                    val dy = (event.rawY - initialTouchY).toInt()
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                        isClick = false
-                    }
-                    params.x = initialX + dx
-                    params.y = initialY + dy
-                    windowManager?.updateViewLayout(bubbleView, params)
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    if (isClick) {
-                        toggleGlitchState()
-                    } else {
-                        // Persist position
-                        scope.launch {
-                            (application as CallGlitchApplication).settingsRepository.saveBubblePosition(params.x, params.y)
-                        }
-                    }
-                    true
-                }
-                else -> false
-            }
-        }
-
-        // Long press opens profile menu
-        bubbleView?.setOnLongClickListener {
-            openProfileMenu()
-            true
-        }
-
-        windowManager?.addView(bubbleView, params)
-
-        // Observe VPN state to change bubble visual appearance
-        scope.launch {
-            CallGlitchVpnService.isRunning.collect { running ->
-                bubbleIcon?.setImageResource(
-                    if (running) R.drawable.ic_bubble_active else R.drawable.ic_bubble_inactive
-                )
-            }
-        }
-    }
-
-    private fun toggleGlitchState() {
-        if (CallGlitchVpnService.isRunning.value) {
-            CallGlitchVpnService.stopService(this)
-            Toast.makeText(this, "Call Glitch: Deactivated", Toast.LENGTH_SHORT).show()
-        } else {
-            scope.launch {
-                val profile = (application as CallGlitchApplication).settingsRepository.activeProfileFlow.first()
-                CallGlitchVpnService.startService(this@OverlayBubbleService, profile)
-                Toast.makeText(this@OverlayBubbleService, "Call Glitch: \${profile.displayName} Active", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun openProfileMenu() {
-        Toast.makeText(this, "Cycle Profile: Tap to toggle", Toast.LENGTH_SHORT).show()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        bubbleView?.let { windowManager?.removeView(it) }
-        scope.cancel()
-    }
-}
-`
-  },
-  {
     path: 'app/src/main/java/com/callglitch/app/ui/MainActivity.kt',
     language: 'kotlin',
-    description: 'Jetpack Compose entry point handling VPN permission preparation & navigation',
+    description: 'Jetpack Compose entry point handling VPN permission preparation & Quick Settings setup',
     content: `package com.callglitch.app.ui
 
 import android.app.Activity
+import android.app.StatusBarManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -1498,11 +932,12 @@ import androidx.compose.ui.Modifier
 import com.callglitch.app.CallGlitchApplication
 import com.callglitch.app.model.GlitchConfig
 import com.callglitch.app.model.GlitchProfileType
-import com.callglitch.app.overlay.OverlayBubbleService
+import com.callglitch.app.tile.GlitchTileService
 import com.callglitch.app.ui.screens.MainScreen
 import com.callglitch.app.ui.theme.CallGlitchTheme
 import com.callglitch.app.vpn.CallGlitchVpnService
 import kotlinx.coroutines.launch
+import java.util.concurrent.Executor
 
 class MainActivity : ComponentActivity() {
 
@@ -1516,14 +951,6 @@ class MainActivity : ComponentActivity() {
             pendingStartAction = null
         } else {
             Toast.makeText(this, "VPN permission required to impair calling app traffic.", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private val overlayPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        if (Settings.canDrawOverlays(this)) {
-            OverlayBubbleService.start(this)
         }
     }
 
@@ -1547,7 +974,6 @@ class MainActivity : ComponentActivity() {
                     val customConfig by settingsRepo.customConfigFlow.collectAsState(initial = GlitchConfig())
                     val selectedPackages by settingsRepo.selectedPackagesFlow.collectAsState(initial = settingsRepo.defaultCallingPackages)
                     val autoTimeout by settingsRepo.autoTimeoutSecondsFlow.collectAsState(initial = 0)
-                    val floatingBubbleEnabled by settingsRepo.floatingBubbleEnabledFlow.collectAsState(initial = false)
 
                     val coroutineScope = rememberCoroutineScope()
 
@@ -1557,7 +983,6 @@ class MainActivity : ComponentActivity() {
                         customConfig = customConfig,
                         selectedPackages = selectedPackages,
                         autoTimeout = autoTimeout,
-                        floatingBubbleEnabled = floatingBubbleEnabled,
                         forwardedPackets = forwardedCount,
                         droppedPackets = droppedCount,
                         onToggleGlitch = { start ->
@@ -1594,23 +1019,8 @@ class MainActivity : ComponentActivity() {
                                 settingsRepo.setAutoTimeoutSeconds(seconds)
                             }
                         },
-                        onToggleBubble = { enable ->
-                            coroutineScope.launch {
-                                settingsRepo.setFloatingBubbleEnabled(enable)
-                                if (enable) {
-                                    if (Settings.canDrawOverlays(this@MainActivity)) {
-                                        OverlayBubbleService.start(this@MainActivity)
-                                    } else {
-                                        val intent = Intent(
-                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                            android.net.Uri.parse("package:\$packageName")
-                                        )
-                                        overlayPermissionLauncher.launch(intent)
-                                    }
-                                } else {
-                                    OverlayBubbleService.stop(this@MainActivity)
-                                }
-                            }
+                        onRequestAddTile = {
+                            requestAddQuickSettingsTile()
                         }
                     )
                 }
@@ -1629,6 +1039,26 @@ class MainActivity : ComponentActivity() {
             CallGlitchVpnService.startService(this, profile)
         }
     }
+
+    private fun requestAddQuickSettingsTile() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val statusBarManager = getSystemService(Context.STATUS_BAR_SERVICE) as StatusBarManager
+            val componentName = ComponentName(this, GlitchTileService::class.java)
+            val executor = Executor { it.run() }
+            statusBarManager.requestAddTileService(
+                componentName,
+                getString(com.callglitch.app.R.string.tile_name),
+                android.graphics.drawable.Icon.createWithResource(this, com.callglitch.app.R.drawable.ic_tile_glitch),
+                executor
+            ) { resultCode ->
+                if (resultCode == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
+                    Toast.makeText(this, "Call Glitch tile added to Quick Settings!", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            Toast.makeText(this, "Swipe down Quick Settings, tap Edit (pencil icon), and drag Call Glitch into your active tiles.", Toast.LENGTH_LONG).show()
+        }
+    }
 }
 `
   },
@@ -1639,8 +1069,6 @@ class MainActivity : ComponentActivity() {
     content: `package com.callglitch.app.ui.screens
 
 import androidx.compose.animation.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -1670,7 +1098,6 @@ fun MainScreen(
     customConfig: GlitchConfig,
     selectedPackages: Set<String>,
     autoTimeout: Int,
-    floatingBubbleEnabled: Boolean,
     forwardedPackets: Long,
     droppedPackets: Long,
     onToggleGlitch: (Boolean) -> Unit,
@@ -1678,7 +1105,7 @@ fun MainScreen(
     onUpdateCustomConfig: (GlitchConfig) -> Unit,
     onUpdateSelectedApps: (Set<String>) -> Unit,
     onUpdateTimeout: (Int) -> Unit,
-    onToggleBubble: (Boolean) -> Unit
+    onRequestAddTile: () -> Unit
 ) {
     var showAppDialog by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
@@ -1776,13 +1203,13 @@ fun MainScreen(
                     Icon(
                         imageVector = if (isRunning) Icons.Default.PowerSettingsNew else Icons.Default.PlayArrow,
                         contentDescription = "Toggle",
-                        tint = Color.white,
+                        tint = Color.White,
                         modifier = Modifier.size(44.dp)
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = if (isRunning) "STOP" else "START",
-                        color = Color.white,
+                        color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
@@ -1859,7 +1286,7 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Targeted Calling Apps", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         Text(
                             "\${selectedPackages.size} apps routed through VPN (unselected bypass)",
@@ -1875,7 +1302,7 @@ fun MainScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 5. In-Call Activation Helpers
+            // 5. Primary In-Call Control: Quick Settings Tile Banner
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -1888,17 +1315,25 @@ fun MainScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Floating Control Bubble", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text("Primary In-Call Control: Quick Settings Tile", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                             Text(
-                                "Draggable on-screen button over video calls",
+                                "Swipe down during a call and tap the Call Glitch tile to toggle without leaving the call.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Switch(
-                            checked = floatingBubbleEnabled,
-                            onCheckedChange = onToggleBubble
-                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = onRequestAddTile,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.AddCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Add Call Glitch to Quick Settings")
                     }
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
@@ -1955,7 +1390,6 @@ fun MainScreen(
 
             AnimatedVisibility(visible = showAdvanced) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    // Base Latency Slider
                     Text("Base Latency: \${customConfig.baseLatencyMs} ms", fontSize = 13.sp)
                     Slider(
                         value = customConfig.baseLatencyMs.toFloat(),
@@ -1963,7 +1397,6 @@ fun MainScreen(
                         valueRange = 0f..800f
                     )
 
-                    // Jitter Slider
                     Text("Random Jitter: ±\${customConfig.randomJitterMs} ms", fontSize = 13.sp)
                     Slider(
                         value = customConfig.randomJitterMs.toFloat(),
@@ -1971,7 +1404,6 @@ fun MainScreen(
                         valueRange = 0f..300f
                     )
 
-                    // Packet Loss Slider
                     Text("Packet Loss: \${String.format(\"%.1f\", customConfig.packetLossPercent)} %", fontSize = 13.sp)
                     Slider(
                         value = customConfig.packetLossPercent.toFloat(),
@@ -1979,7 +1411,6 @@ fun MainScreen(
                         valueRange = 0f..25f
                     )
 
-                    // Impairment Direction
                     Text("Traffic Direction: \${customConfig.direction.displayName}", fontSize = 13.sp)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1996,7 +1427,6 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // TCP Impairment Switch
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2019,86 +1449,93 @@ fun MainScreen(
 `
   },
   {
-    path: 'README.md',
+    path: 'app/src/test/java/com/callglitch/app/GlitchConfigTest.kt',
+    language: 'kotlin',
+    description: 'Unit tests validating profile parameters, jitter, loss and custom fallbacks',
+    content: `package com.callglitch.app
+
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.ImpairmentDirection
+import org.junit.Assert.*
+import org.junit.Test
+
+class GlitchConfigTest {
+
+    @Test
+    fun testMildProfileParameters() {
+        val mild = GlitchConfig.MILD
+        assertEquals(GlitchProfileType.MILD, mild.profileType)
+        assertEquals(120, mild.baseLatencyMs)
+        assertEquals(30, mild.randomJitterMs)
+        assertEquals(1.0, mild.packetLossPercent, 0.001)
+        assertFalse(mild.burstInterruptionEnabled)
+        assertEquals(ImpairmentDirection.BOTH, mild.direction)
+        assertFalse(mild.affectTcp)
+    }
+
+    @Test
+    fun testModerateProfileParameters() {
+        val moderate = GlitchConfig.MODERATE
+        assertEquals(GlitchProfileType.MODERATE, moderate.profileType)
+        assertEquals(220, moderate.baseLatencyMs)
+        assertEquals(90, moderate.randomJitterMs)
+        assertEquals(3.0, moderate.packetLossPercent, 0.001)
+        assertFalse(moderate.burstInterruptionEnabled)
+        assertEquals(ImpairmentDirection.BOTH, moderate.direction)
+        assertFalse(moderate.affectTcp)
+    }
+
+    @Test
+    fun testSevereProfileParameters() {
+        val severe = GlitchConfig.SEVERE
+        assertEquals(GlitchProfileType.SEVERE, severe.profileType)
+        assertEquals(350, severe.baseLatencyMs)
+        assertEquals(160, severe.randomJitterMs)
+        assertEquals(7.0, severe.packetLossPercent, 0.001)
+        assertTrue(severe.burstInterruptionEnabled)
+        assertEquals(1200, severe.burstDurationMs)
+        assertEquals(ImpairmentDirection.BOTH, severe.direction)
+        assertFalse(severe.affectTcp)
+    }
+
+    @Test
+    fun testCustomFallbackMapping() {
+        val customFallback = GlitchConfig(
+            profileType = GlitchProfileType.CUSTOM,
+            baseLatencyMs = 450,
+            randomJitterMs = 120,
+            packetLossPercent = 12.0,
+            direction = ImpairmentDirection.OUTGOING,
+            affectTcp = true
+        )
+
+        val resolved = GlitchConfig.forType(GlitchProfileType.CUSTOM, customFallback)
+        assertEquals(GlitchProfileType.CUSTOM, resolved.profileType)
+        assertEquals(450, resolved.baseLatencyMs)
+        assertEquals(120, resolved.randomJitterMs)
+        assertEquals(12.0, resolved.packetLossPercent, 0.001)
+        assertEquals(ImpairmentDirection.OUTGOING, resolved.direction)
+        assertTrue(resolved.affectTcp)
+    }
+}
+`
+  },
+  {
+    path: 'README_ANDROID.md',
     language: 'markdown',
-    description: 'Comprehensive documentation with architecture, build instructions, test verification & troubleshooting',
-    content: `# Call Glitch: Rootless Per-App Network Impairment Utility
+    description: 'Android Studio project guide with build commands, architecture & ADB setup',
+    content: `# Call Glitch — Native Android Studio Project
 
-A production-grade native Android application that introduces controlled latency, jitter, packet loss, and burst interruptions to simulate unstable network conditions on ongoing voice and video calls (WhatsApp, Telegram, Google Meet, Zoom, Instagram, etc.).
+The Android Studio project is located in the android/ directory.
 
-## 1. Architectural Highlights
-
-- **Rootless & Self-Contained:** Uses Android's official \`VpnService\` API. Requires no root access, no external VPN server, and no remote relays.
-- **Per-Application Traffic Isolation:** Uses \`VpnService.Builder.addAllowedApplication()\` to route only the designated calling application(s). All non-selected apps (e.g. web browsers, media players, background sync) continue over the normal default network connection untouched.
-- **User-Space TCP/UDP Forwarding Engine:** Runs a local packet parsing and forwarding pipeline. UDP media streams are handled through protected direct sockets (\`VpnService.protect()\`) to prevent routing loops.
-- **Bi-Directional Impairment Pipeline:**
-  - Incoming packets and outgoing packets pass through an independent delay queue and statistical loss filter before reaching the TUN interface or socket.
-  - Bounded buffers (500 packets max) prevent memory leaks.
-  - Flow-isolated queues avoid head-of-line blocking across independent connections.
-- **Priority STOP & Fail-Safe Teardown:** Stopping impairment immediately tears down the local TUN interface and closes forwarding channels. Normal networking is instantly restored with zero packet blackholing.
-- **Network Handover Watchdog:** Monitors Wi-Fi <-> Cellular network transitions using \`ConnectivityManager.NetworkCallback\` and seamlessly migrates sockets.
-
----
-
-## 2. In-Call Activation Methods
-
-1. **Quick Settings Tile (Primary):**
-   - Swipe down from the top during an active WhatsApp or Telegram call.
-   - Tap the **Call Glitch** tile.
-   - The selected profile (Mild, Moderate, Severe, Custom) is immediately engaged without leaving or minimizing the video call.
-   - Tap again to restore normal network quality immediately.
-2. **Persistent Foreground Notification:**
-   - Displays real-time impairment status, profile name, and packet drop stats.
-   - Features a prominent one-tap **STOP** action button.
-3. **Optional Floating Control Bubble:**
-   - Small draggable floating button that stays over call apps.
-   - Single-tap toggles impairment ON / OFF.
-   - Long-press switches profiles.
-
----
-
-## 3. Profiles & Initial Engineering Values
-
-| Profile | Base Latency | Random Jitter | UDP Packet Loss | Direction |
-|---|---|---|---|---|
-| **Mild** | 120 ms | ±30 ms | 1.0 % | Both |
-| **Moderate** | 220 ms | ±90 ms | 3.0 % | Both |
-| **Severe** | 350 ms | ±160 ms | 7.0 % | Both |
-| **Custom** | 0 – 800 ms | ±0 – 300 ms | 0 – 25 % | Configurable |
-
-*TCP impairment is kept disabled by default so HTTP/TLS signaling and initial call handshakes remain intact.*
-
----
-
-## 4. How to Build & Install
-
-### Prerequisites
-- Android Studio Hedgehog (2023.1.1) or newer / Ladybug
-- Android SDK 35 (compileSdk 35, minSdk 26)
-- JDK 17
-
-### Command Line Build
+## Build Instructions
 \`\`\`bash
-# Build Debug APK
-./gradlew assembleDebug
-
-# Install on connected device via ADB
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+cd android
+chmod +x gradlew
+./gradlew testDebugUnitTest
+./gradlew :app:assembleDebug
 \`\`\`
-
----
-
-## 5. Verification Test Matrix (Tests 1–9)
-
-- **Test 1 (Normal Operation):** VPN active, impairment disabled. Confirm WhatsApp call flows cleanly without drops.
-- **Test 2 (Mild):** 120ms latency / 1% drop. Verify minor audio buffering without call drop.
-- **Test 3 (Moderate):** 220ms latency / 3% drop. Verify noticeable call intermittency and video downscaling.
-- **Test 4 (Severe):** 350ms latency / 7% drop. Verify heavy video freeze and delayed voice packets.
-- **Test 5 (In-Call QS Toggle):** Swipe down QS shade while in call, tap tile to toggle on/off multiple times.
-- **Test 6 (App Isolation):** Stream audio on Spotify while glitching WhatsApp. Spotify must remain clear.
-- **Test 7 (Handover):** Switch between Wi-Fi and 5G/LTE during an active session. Verify socket re-protection.
-- **Test 8 (Recovery):** Hit STOP. Verify immediate restoration of baseline network throughput.
-- **Test 9 (VPN Conflict):** Attempt to launch a second VPN. Verify \`VpnService.onRevoke()\` shuts down cleanly.
 `
   }
 ];
