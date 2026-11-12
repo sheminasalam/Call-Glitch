@@ -236,14 +236,9 @@ class CallGlitchVpnService : VpnService() {
             setSession("CallGlitch: ${config.profileType.displayName}")
             setBlocking(true)
 
-            // Gracefully add IPv6 routes & addresses if supported on device
-            try {
-                addAddress("fd00:call:glitch::1", 64)
-                addRoute("::", 0)
-                addDnsServer("2001:4860:4860::8888")
-            } catch (e: Exception) {
-                Log.w(TAG, "IPv6 address or route not supported on this interface: ${e.message}")
-            }
+            // Note: We route 0.0.0.0/0 IPv4 with public DNS servers (8.8.8.8, 1.1.1.1).
+            // We deliberately omit addRoute("::", 0) to ensure the target app uses the IPv4 TUN
+            // without blackholing carrier dual-stack media flows.
 
             // CRITICAL: Route ONLY selected applications via addAllowedApplication()
             val pm = packageManager

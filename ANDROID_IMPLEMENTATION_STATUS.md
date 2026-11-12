@@ -107,9 +107,19 @@ The issue where tapping START resulted in no VPN creation or apparent activity w
 4. **Silent Error Swallowing in `startVpn`:**
    - *Cause:* Any error during `establishVpn` (e.g. `VpnService.Builder.establish()` returning null if permission was rejected or not ready) called `stopVpn()` silently with no error state propagated to the UI.
    - *Fix:* Added `_lastErrorMessage` in `CallGlitchVpnService` and an `AlertDialog` in `MainActivity.kt` that surfaces exact failure causes to the user.
-5. **IPv6 Route Rejection on Certain Carriers/Devices:**
-   - *Cause:* Unconditionally adding `addAddress("fd00:call:glitch::1", 64)` and `addRoute("::", 0)` caused `builder.establish()` to return null or throw `IllegalArgumentException` on devices lacking IPv6 TUN support.
-   - *Fix:* Wrapped IPv6 route and address configuration in a graceful try-catch block so IPv4 routing succeeds unconditionally.
+### J. Root Cause Analysis & Resolution for "Connection outright blocked / intensity has no effect"
+When the VPN was active, target applications previously had their internet connection completely cut off regardless of profile level (even with custom zero parameters). The investigation revealed 4 critical protocol-level causes:
+1. **Invalid IPv4 Header Checksum in Synthesized Packets (The DNS Blackhole):**
+   - *Cause:* In `synthesizeIpUdpPacket`, the IPv4 header checksum was hardcoded to `0` as a placeholder (`buf.putShort(0)`). Under RFC 791, IPv4 header checksums are mandatory; the Linux kernel dropped 100% of all synthesized packets returned to the TUN interface. Because DNS resolution queries to `8.8.8.8:53` had their responses rejected by the kernel with bad checksums, the target application suffered permanent DNS timeouts and could not resolve any host.
+   - *Fix:* Created `ChecksumCalculator` which computes the RFC-compliant 16-bit one's complement checksum for IPv4 headers, UDP headers, and TCP headers with pseudo-headers.
+2. **Missing TCP User-Space Proxying (Signaling Blackhole):**
+   - *Cause:* Calling apps (WhatsApp, Telegram, Meet, Zoom, Chamet) establish TCP/TLS connections for call signaling, user authentication, and media channel negotiation. Previously, `forwardRawPacket` did nothing (`forwardedCount.incrementAndGet()`), discarding 100% of TCP packets sent into the TUN.
+   - *Fix:* Built a full transparent user-space TCP proxy in `PacketForwardingEngine.kt`. When an app sends a `SYN` packet, the engine responds with `SYN+ACK` over the TUN while connecting a real protected `Socket` via `vpnService.protect(socket)`. TCP data is seamlessly relayed bidirectionally between the app and the remote server.
+3. **DNS Query Exemption from Impairment:**
+   - *Cause:* Artificial packet delay and statistical loss applied indiscriminately to port 53 broke DNS handshakes.
+   - *Fix:* Explicitly exempted UDP port 53 from latency and packet loss so host resolution is always instantaneous and 100% reliable.
+4. **Zero-Parameter Custom Impairment Passthrough:**
+   - *Cause:* When delay is 0ms, jitter is 0ms, and packet loss is 0%, packets are dispatched immediately without entering the delay queue, allowing normal full-speed throughput.
 
 ---
 
