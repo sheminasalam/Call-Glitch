@@ -29,6 +29,10 @@ import java.util.concurrent.Executor
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_PROMPT_APP_SELECTION = "extra_prompt_app_selection"
+    }
+
     private var pendingStartAction: (() -> Unit)? = null
 
     private val vpnPrepareLauncher = registerForActivityResult(
@@ -38,14 +42,18 @@ class MainActivity : ComponentActivity() {
             pendingStartAction?.invoke()
             pendingStartAction = null
         } else {
-            Toast.makeText(this, "VPN permission required to impair calling app traffic.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "VPN permission is required to shape network traffic.", Toast.LENGTH_LONG).show()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val settingsRepo = (application as CallGlitchApplication).settingsRepository
+        val app = application as CallGlitchApplication
+        val settingsRepo = app.settingsRepository
+        val appDiscoveryRepo = app.appDiscoveryRepository
+
+        val initialPromptAppSelection = intent?.getBooleanExtra(EXTRA_PROMPT_APP_SELECTION, false) == true
 
         setContent {
             CallGlitchTheme {
@@ -60,10 +68,12 @@ class MainActivity : ComponentActivity() {
 
                     val savedProfile by settingsRepo.activeProfileFlow.collectAsState(initial = GlitchProfileType.MODERATE)
                     val customConfig by settingsRepo.customConfigFlow.collectAsState(initial = GlitchConfig())
-                    val selectedPackages by settingsRepo.selectedPackagesFlow.collectAsState(initial = settingsRepo.defaultCallingPackages)
+                    val selectedPackages by settingsRepo.selectedPackagesFlow.collectAsState(initial = emptySet())
                     val autoTimeout by settingsRepo.autoTimeoutSecondsFlow.collectAsState(initial = 0)
 
                     val coroutineScope = rememberCoroutineScope()
+
+                    var triggerOpenAppDialog by remember { mutableStateOf(initialPromptAppSelection) }
 
                     MainScreen(
                         isRunning = isRunning,
@@ -73,9 +83,21 @@ class MainActivity : ComponentActivity() {
                         autoTimeout = autoTimeout,
                         forwardedPackets = forwardedCount,
                         droppedPackets = droppedCount,
+                        appDiscoveryRepository = appDiscoveryRepo,
+                        forceOpenAppDialog = triggerOpenAppDialog,
+                        onAppDialogDismissed = { triggerOpenAppDialog = false },
                         onToggleGlitch = { start ->
                             if (start) {
-                                requestVpnAndStart(savedProfile)
+                                if (selectedPackages.isEmpty()) {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Please select at least one target application before starting.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    triggerOpenAppDialog = true
+                                } else {
+                                    requestVpnAndStart(savedProfile)
+                                }
                             } else {
                                 CallGlitchVpnService.stopService(this@MainActivity)
                             }
@@ -100,6 +122,12 @@ class MainActivity : ComponentActivity() {
                         onUpdateSelectedApps = { pkgs ->
                             coroutineScope.launch {
                                 settingsRepo.setSelectedPackages(pkgs)
+                                if (isRunning) {
+                                    val updateIntent = Intent(this@MainActivity, CallGlitchVpnService::class.java).apply {
+                                        action = CallGlitchVpnService.ACTION_UPDATE_APPS
+                                    }
+                                    startService(updateIntent)
+                                }
                             }
                         },
                         onUpdateTimeout = { seconds ->

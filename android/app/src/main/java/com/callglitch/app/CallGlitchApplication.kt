@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import com.callglitch.app.data.AppDiscoveryRepository
 import com.callglitch.app.data.GlitchSettingsRepository
 
 class CallGlitchApplication : Application() {
@@ -12,10 +13,14 @@ class CallGlitchApplication : Application() {
     lateinit var settingsRepository: GlitchSettingsRepository
         private set
 
+    lateinit var appDiscoveryRepository: AppDiscoveryRepository
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         settingsRepository = GlitchSettingsRepository(this)
+        appDiscoveryRepository = AppDiscoveryRepository(this)
         createNotificationChannels()
     }
 

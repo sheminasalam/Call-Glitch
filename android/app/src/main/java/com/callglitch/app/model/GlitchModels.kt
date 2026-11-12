@@ -69,8 +69,10 @@ data class GlitchConfig(
     }
 }
 
-data class SelectedApp(
+data class InstalledAppInfo(
     val packageName: String,
     val appName: String,
-    val isCallingApp: Boolean = true
+    val isSystemApp: Boolean = false,
+    val hasLauncher: Boolean = true
 )
+

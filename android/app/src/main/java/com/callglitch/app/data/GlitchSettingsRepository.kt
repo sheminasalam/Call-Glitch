@@ -27,15 +27,6 @@ class GlitchSettingsRepository(private val context: Context) {
         val AUTO_TIMEOUT_SECONDS = intPreferencesKey("auto_timeout_seconds")
     }
 
-    val defaultCallingPackages = setOf(
-        "com.whatsapp",
-        "org.telegram.messenger",
-        "com.instagram.android",
-        "com.facebook.orca",
-        "com.google.android.apps.tachyon", // Google Meet
-        "us.zoom.videomeetings"
-    )
-
     val activeProfileFlow: Flow<GlitchProfileType> = context.dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { prefs ->
@@ -64,7 +55,7 @@ class GlitchSettingsRepository(private val context: Context) {
     val selectedPackagesFlow: Flow<Set<String>> = context.dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { prefs ->
-            prefs[PreferencesKeys.SELECTED_PACKAGES] ?: defaultCallingPackages
+            prefs[PreferencesKeys.SELECTED_PACKAGES] ?: emptySet()
         }
 
     val autoTimeoutSecondsFlow: Flow<Int> = context.dataStore.data

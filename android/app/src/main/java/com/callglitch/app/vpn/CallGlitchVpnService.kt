@@ -42,6 +42,7 @@ class CallGlitchVpnService : VpnService() {
         const val ACTION_START = "com.callglitch.app.ACTION_START"
         const val ACTION_STOP = "com.callglitch.app.ACTION_STOP"
         const val ACTION_UPDATE_PROFILE = "com.callglitch.app.ACTION_UPDATE_PROFILE"
+        const val ACTION_UPDATE_APPS = "com.callglitch.app.ACTION_UPDATE_APPS"
         const val EXTRA_PROFILE_TYPE = "extra_profile_type"
         private const val NOTIFICATION_ID = 9001
 
@@ -109,6 +110,29 @@ class CallGlitchVpnService : VpnService() {
                 }
                 return START_STICKY
             }
+            ACTION_UPDATE_APPS -> {
+                if (_isRunning.value) {
+                    serviceScope.launch {
+                        try {
+                            val repo = (application as CallGlitchApplication).settingsRepository
+                            val selectedApps = repo.selectedPackagesFlow.first()
+                            if (selectedApps.isEmpty()) {
+                                Log.w(TAG, "All target applications deselected while active. Stopping VPN.")
+                                stopVpn()
+                                return@launch
+                            }
+                            val custom = repo.customConfigFlow.first()
+                            val config = GlitchConfig.forType(_activeProfile.value, custom)
+                            establishVpn(selectedApps, config)
+                            Log.i(TAG, "Re-established VPN TUN with updated apps: $selectedApps")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error updating apps on active VPN: ${e.message}", e)
+                            stopVpn()
+                        }
+                    }
+                }
+                return START_STICKY
+            }
             ACTION_START, null -> {
                 val profileName = intent?.getStringExtra(EXTRA_PROFILE_TYPE)
                 val profile = profileName?.let {
@@ -129,6 +153,11 @@ class CallGlitchVpnService : VpnService() {
             try {
                 val repo = (application as CallGlitchApplication).settingsRepository
                 val selectedApps = repo.selectedPackagesFlow.first()
+                if (selectedApps.isEmpty()) {
+                    Log.e(TAG, "Cannot start VPN: No target applications selected.")
+                    stopVpn()
+                    return@launch
+                }
                 val custom = repo.customConfigFlow.first()
                 val config = GlitchConfig.forType(profile, custom)
                 val timeoutSec = repo.autoTimeoutSecondsFlow.first()
@@ -158,6 +187,9 @@ class CallGlitchVpnService : VpnService() {
     }
 
     private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
+        if (selectedApps.isEmpty()) {
+            throw IllegalStateException("No target applications selected. Please select at least one application.")
+        }
         var allowedCount = 0
         val builder = Builder().apply {
             setMtu(1500)
@@ -171,9 +203,12 @@ class CallGlitchVpnService : VpnService() {
             setSession("CallGlitch: ${config.profileType.displayName}")
             setBlocking(true)
 
-            // CRITICAL: Use addAllowedApplication() to isolate calling apps
+            // CRITICAL: Route ONLY selected applications via addAllowedApplication()
             val pm = packageManager
             for (pkg in selectedApps) {
+                // Ensure we never route Call Glitch through its own VPN
+                if (pkg == packageName) continue
+
                 try {
                     pm.getPackageInfo(pkg, 0)
                     addAllowedApplication(pkg)
@@ -183,12 +218,10 @@ class CallGlitchVpnService : VpnService() {
                     Log.w(TAG, "Selected app not found on device, skipping: $pkg")
                 }
             }
+        }
 
-            // Fallback: If no selected apps are currently installed, do not block everything
-            if (allowedCount == 0) {
-                Log.w(TAG, "No valid apps selected to route. Allowing own package to prevent blackhole.")
-                addAllowedApplication(packageName)
-            }
+        if (allowedCount == 0) {
+            throw IllegalStateException("None of the selected applications are currently installed on this device.")
         }
 
         vpnInterface?.close()

@@ -2,17 +2,40 @@
 
 **Branch:** `fix/real-forwarding-foundation`  
 **Date:** November 2026  
-**Status:** Build Foundation Established · CI Configuration Fixed · Overlay Feature Removed · Quick Settings Verified
+**Status:** Build Foundation Established · CI Configuration Fixed · Overlay Feature Removed · Dynamic App Selection Implemented
 
 ---
 
 ## 1. Summary of Actions Completed
 
-### A. Repository Restructuring & Real Android Project
+### A. Dynamic Installed Application Selection (No Hardcoded Lists)
+- **Eliminated Hardcoded Lists:** Completely removed `defaultCallingPackages` in `GlitchSettingsRepository.kt` and hardcoded `availableApps` in `MainScreen.kt`. Defaults to an empty selection (`emptySet()`).
+- **Dynamic Discovery Engine:** Created `AppDiscoveryRepository.kt` that uses Android `PackageManager` to discover all installed applications on the device dynamically.
+  - Queries `packageManager.getInstalledApplications()` with API 33+ `ApplicationInfoFlags` backward compatibility.
+  - Filters out Call Glitch's own package (`context.packageName`) to prevent circular loops or self-routing blackholes.
+  - Asynchronously loads application labels and icons off the main thread (`Dispatchers.IO`).
+  - Sorts applications alphabetically by label (case-insensitive).
+  - Distinguishes user-installed applications from system applications, providing a "System Apps" toggle.
+- **Interactive Compose Selector:**
+  - Full-featured `AppSelectionDialog` with real-time name and package search.
+  - "Select All" and "Clear All" convenience actions.
+  - Application icons rendered from system drawables via Compose `produceState` and `Bitmap.asImageBitmap()`.
+  - System badge indicator for system-level packages.
+  - Live selection counter (`X selected`).
+- **Strict Empty Selection Validation:**
+  - The VPN is forbidden from starting when no target applications are selected.
+  - Removed old fallback that routed Call Glitch's own package name.
+  - If a user tries to start without selected apps (from either the main UI or Quick Settings tile), Call Glitch halts, displays a clear prompt, and directs the user to select target apps.
+- **Dynamic Runtime Tunnel Reconfiguration:**
+  - Added `ACTION_UPDATE_APPS` to `CallGlitchVpnService` so modifications to target applications while the VPN is active immediately rebuild the TUN interface with the new set of allowed applications (or tear down safely if all apps were deselected).
+- **Unit Testing:**
+  - Added `AppDiscoveryAndSelectionTest.kt` verifying `InstalledAppInfo`, self-exclusion, empty selection guards, and alphabetical sorting.
+
+### B. Repository Restructuring & Real Android Project
 - The Android project has been moved from being an embedded TypeScript string array into a real, directly buildable Android Studio project in the **`android/`** directory.
 - Android Studio can now directly open `android/` with full IDE support, code completion, and native Gradle tooling.
 
-### B. Resolution of GitHub Actions CI Failures
+### C. Resolution of GitHub Actions CI Failures
 - **Initial Failed Run:** Run ID `43164605355` (November 12, 2026).
   - *Root Cause:* Workflow executed `test -f settings.gradle.kts` at repository root where only web app files existed.
   - *Resolution:* Moved Android project into `android/` and updated `.github/workflows/android-build.yml`.
@@ -29,7 +52,7 @@
     1. Changed constructor invocation to `config = config`.
     2. Hoisted `var allowedCount = 0` outside the `apply` block so it is accessible in the logging statement.
 
-### C. Official Gradle Wrapper Integration
+### D. Official Gradle Wrapper Integration
 - Replaced the previous makeshift script with the official Gradle **8.10.2** wrapper:
   - `android/gradle/wrapper/gradle-wrapper.jar` (43,583 bytes, official binary)
   - `android/gradle/wrapper/gradle-wrapper.properties` (distribution URL: `gradle-8.10.2-bin.zip`)
@@ -37,7 +60,7 @@
   - `android/gradlew.bat` (Windows batch script)
 - Builds can now be executed on any clean machine with JDK 17 without requiring a globally pre-installed Gradle package.
 
-### D. Complete Android Resource Generation
+### E. Complete Android Resource Generation
 Added all previously missing Android XML resources referenced in code:
 - Vector Drawables:
   - `ic_tile_glitch.xml` (inactive Quick Settings tile)
@@ -52,7 +75,7 @@ Added all previously missing Android XML resources referenced in code:
   - `values/strings.xml`, `values/colors.xml`, `values/themes.xml`
   - `xml/data_extraction_rules.xml`, `xml/backup_rules.xml`
 
-### E. Total Removal of Floating Overlay Feature
+### F. Total Removal of Floating Overlay Feature
 In strict adherence to requirements, the floating control bubble has been eradicated:
 - **Deleted:** `OverlayBubbleService.kt`
 - **Removed Permissions:** `android.permission.SYSTEM_ALERT_WINDOW` removed from `AndroidManifest.xml`
@@ -60,14 +83,14 @@ In strict adherence to requirements, the floating control bubble has been eradic
 - **Removed UI & State:** Floating bubble toggles, overlay permission launchers, and overlay coordinates removed from `MainActivity.kt`, `MainScreen.kt`, and `GlitchSettingsRepository.kt`.
 - **Workbench Cleaned:** React simulator updated to remove bubble toggle and overlay elements.
 
-### F. Quick Settings Tile: Sole Primary In-Call Control
+### G. Quick Settings Tile: Sole Primary In-Call Control
 - `GlitchTileService.kt` verified as a genuine native `TileService`.
 - Tapping the tile directly starts or stops `CallGlitchVpnService` without opening the application.
 - Updates tile state to `STATE_ACTIVE` or `STATE_INACTIVE` and synchronizes subtitle with the active profile on Android 10+.
 - Integrated `StatusBarManager.requestAddTileService` prompt in `MainActivity.kt` for Android 13+ devices.
 - Persistent foreground notification with prominent **STOP** button retained as secondary recovery control.
 
-### G. Unified Single Source of Truth
+### H. Unified Single Source of Truth
 - The files in `android/` are the authoritative source.
 - `src/android/projectFiles.ts` mirrors the real project files.
 - `src/utils/projectZip.ts` now bundles the real Gradle wrapper, binary JAR, vector resources, and Kotlin files.

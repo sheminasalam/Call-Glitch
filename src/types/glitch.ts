@@ -57,24 +57,32 @@ export const PRESET_PROFILES: Record<Exclude<ProfileType, 'CUSTOM'>, GlitchProfi
   },
 };
 
-export interface CallingApp {
+export interface InstalledAppInfo {
   id: string;
   name: string;
   packageName: string;
   icon: string;
-  defaultSelected: boolean;
+  isSystemApp?: boolean;
 }
 
-export const CALLING_APPS: CallingApp[] = [
-  { id: 'whatsapp', name: 'WhatsApp', packageName: 'com.whatsapp', icon: '💬', defaultSelected: true },
-  { id: 'telegram', name: 'Telegram', packageName: 'org.telegram.messenger', icon: '✈️', defaultSelected: true },
-  { id: 'instagram', name: 'Instagram', packageName: 'com.instagram.android', icon: '📷', defaultSelected: true },
-  { id: 'messenger', name: 'Messenger', packageName: 'com.facebook.orca', icon: '⚡', defaultSelected: true },
-  { id: 'meet', name: 'Google Meet', packageName: 'com.google.android.apps.tachyon', icon: '📹', defaultSelected: true },
-  { id: 'zoom', name: 'Zoom Workplace', packageName: 'us.zoom.videomeetings', icon: '💻', defaultSelected: true },
-  { id: 'signal', name: 'Signal', packageName: 'org.thoughtcrime.securesms', icon: '🔒', defaultSelected: false },
-  { id: 'discord', name: 'Discord', packageName: 'com.discord', icon: '🎮', defaultSelected: false },
+export const DISCOVERED_INSTALLED_APPS: InstalledAppInfo[] = [
+  { id: 'whatsapp', name: 'WhatsApp', packageName: 'com.whatsapp', icon: '💬', isSystemApp: false },
+  { id: 'telegram', name: 'Telegram', packageName: 'org.telegram.messenger', icon: '✈️', isSystemApp: false },
+  { id: 'instagram', name: 'Instagram', packageName: 'com.instagram.android', icon: '📷', isSystemApp: false },
+  { id: 'messenger', name: 'Messenger', packageName: 'com.facebook.orca', icon: '⚡', isSystemApp: false },
+  { id: 'meet', name: 'Google Meet', packageName: 'com.google.android.apps.tachyon', icon: '📹', isSystemApp: false },
+  { id: 'zoom', name: 'Zoom Workplace', packageName: 'us.zoom.videomeetings', icon: '💻', isSystemApp: false },
+  { id: 'chamet', name: 'Chamet - Live Video Chat', packageName: 'com.funplus.chamet', icon: '🎥', isSystemApp: false },
+  { id: 'signal', name: 'Signal Private Messenger', packageName: 'org.thoughtcrime.securesms', icon: '🔒', isSystemApp: false },
+  { id: 'discord', name: 'Discord', packageName: 'com.discord', icon: '🎮', isSystemApp: false },
+  { id: 'skype', name: 'Skype', packageName: 'com.skype.raider', icon: '📞', isSystemApp: false },
+  { id: 'chrome', name: 'Google Chrome', packageName: 'com.android.chrome', icon: '🌐', isSystemApp: false },
+  { id: 'youtube', name: 'YouTube', packageName: 'com.google.android.youtube', icon: '▶️', isSystemApp: false },
+  { id: 'dialer', name: 'Phone / Dialer', packageName: 'com.google.android.dialer', icon: '📱', isSystemApp: true },
+  { id: 'system_settings', name: 'System Settings', packageName: 'com.android.settings', icon: '⚙️', isSystemApp: true },
 ];
+
+export const CALLING_APPS = DISCOVERED_INSTALLED_APPS;
 
 export interface NetworkMetrics {
   currentPingMs: number;

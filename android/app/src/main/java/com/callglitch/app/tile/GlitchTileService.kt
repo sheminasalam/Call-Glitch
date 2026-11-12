@@ -66,6 +66,29 @@ class GlitchTileService : TileService() {
             // Prepared -> Start the VPN immediately using the user's selected profile
             serviceScope.launch {
                 val repo = (application as CallGlitchApplication).settingsRepository
+                val selected = repo.selectedPackagesFlow.first()
+                if (selected.isEmpty()) {
+                    Log.w(TAG, "Tile clicked but no target applications are selected. Opening MainActivity.")
+                    val promptIntent = Intent(this@GlitchTileService, MainActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        putExtra(MainActivity.EXTRA_PROMPT_APP_SELECTION, true)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        // Android 14+ pendingIntent for startActivityAndCollapse if needed, or normal startActivityAndCollapse
+                        val pendingIntent = android.app.PendingIntent.getActivity(
+                            this@GlitchTileService,
+                            0,
+                            promptIntent,
+                            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                        )
+                        startActivityAndCollapse(pendingIntent)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        startActivityAndCollapse(promptIntent)
+                    }
+                    return@launch
+                }
+
                 val profile = repo.activeProfileFlow.first()
                 Log.i(TAG, "Tile tapped while INACTIVE -> Starting Call Glitch with profile: $profile")
                 CallGlitchVpnService.startService(this@GlitchTileService, profile)
