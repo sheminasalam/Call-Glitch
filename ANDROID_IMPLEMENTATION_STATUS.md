@@ -19,13 +19,15 @@
 - **Subsequent Run Failure:** Run ID `43167498829` (Commit `b0365be7`).
   - *Root Cause:* Task `:app:checkDebugAarMetadata` failed with:
     `Configuration :app:debugRuntimeClasspath contains AndroidX dependencies, but the android.useAndroidX property is not enabled.`
-  - *Resolution:* Created `android/gradle.properties` with:
-    ```properties
-    android.useAndroidX=true
-    org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-    kotlin.code.style=official
-    ```
-    This instructs AGP to treat all dependencies as AndroidX-enabled. No dependency or plugin versions were modified.
+  - *Resolution:* Created `android/gradle.properties` with `android.useAndroidX=true`.
+- **Compiler Run Failure:** Run ID `43168806385` (Commit `e215f714`).
+  - *Task:* `:app:compileDebugKotlin`.
+  - *Root Causes in `CallGlitchVpnService.kt`:*
+    1. `initialConfig = config` did not match constructor signature in `PacketForwardingEngine(vpnService, tunFd, config, onStatsUpdate)`.
+    2. `allowedCount` was declared inside `Builder().apply { var allowedCount = 0 ... }` but referenced outside in `Log.i(TAG, "... Allowed apps: $allowedCount")`.
+  - *Resolution:*
+    1. Changed constructor invocation to `config = config`.
+    2. Hoisted `var allowedCount = 0` outside the `apply` block so it is accessible in the logging statement.
 
 ### C. Official Gradle Wrapper Integration
 - Replaced the previous makeshift script with the official Gradle **8.10.2** wrapper:

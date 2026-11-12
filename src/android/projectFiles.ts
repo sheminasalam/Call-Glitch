@@ -658,6 +658,7 @@ class CallGlitchVpnService : VpnService() {
     }
 
     private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
+        var allowedCount = 0
         val builder = Builder().apply {
             setMtu(1500)
             addAddress("10.240.0.1", 24)
@@ -670,7 +671,6 @@ class CallGlitchVpnService : VpnService() {
             setSession("CallGlitch: \${config.profileType.displayName}")
             setBlocking(true)
 
-            var allowedCount = 0
             val pm = packageManager
             for (pkg in selectedApps) {
                 try {
@@ -696,7 +696,7 @@ class CallGlitchVpnService : VpnService() {
         forwardingEngine = PacketForwardingEngine(
             vpnService = this,
             tunFd = pfd.fileDescriptor,
-            initialConfig = config,
+            config = config,
             onStatsUpdate = { forwarded, dropped ->
                 _forwardedPackets.value = forwarded
                 _droppedPackets.value = dropped
