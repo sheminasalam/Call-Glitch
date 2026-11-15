@@ -120,6 +120,14 @@ class MainActivity : ComponentActivity() {
                         onUpdateCustomConfig = { config ->
                             coroutineScope.launch {
                                 settingsRepo.updateCustomConfig(config)
+                                settingsRepo.setActiveProfile(GlitchProfileType.CUSTOM)
+                                if (isRunning) {
+                                    val intent = Intent(this@MainActivity, CallGlitchVpnService::class.java).apply {
+                                        action = CallGlitchVpnService.ACTION_UPDATE_PROFILE
+                                        putExtra(CallGlitchVpnService.EXTRA_PROFILE_TYPE, GlitchProfileType.CUSTOM.name)
+                                    }
+                                    startService(intent)
+                                }
                             }
                         },
                         onUpdateSelectedApps = { pkgs ->

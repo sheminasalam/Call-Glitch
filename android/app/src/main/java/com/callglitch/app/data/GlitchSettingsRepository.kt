@@ -21,6 +21,8 @@ class GlitchSettingsRepository(private val context: Context) {
         val CUSTOM_JITTER = intPreferencesKey("custom_jitter")
         val CUSTOM_LOSS = doublePreferencesKey("custom_loss")
         val CUSTOM_BURST_ENABLED = booleanPreferencesKey("custom_burst_enabled")
+        val CUSTOM_BURST_DURATION = intPreferencesKey("custom_burst_duration")
+        val CUSTOM_BURST_INTERVAL = intPreferencesKey("custom_burst_interval")
         val CUSTOM_DIRECTION = stringPreferencesKey("custom_direction")
         val CUSTOM_AFFECT_TCP = booleanPreferencesKey("custom_affect_tcp")
         val SELECTED_PACKAGES = stringSetPreferencesKey("selected_packages")
@@ -43,6 +45,8 @@ class GlitchSettingsRepository(private val context: Context) {
                 randomJitterMs = prefs[PreferencesKeys.CUSTOM_JITTER] ?: 100,
                 packetLossPercent = prefs[PreferencesKeys.CUSTOM_LOSS] ?: 4.0,
                 burstInterruptionEnabled = prefs[PreferencesKeys.CUSTOM_BURST_ENABLED] ?: false,
+                burstDurationMs = prefs[PreferencesKeys.CUSTOM_BURST_DURATION] ?: 2500,
+                burstIntervalSeconds = prefs[PreferencesKeys.CUSTOM_BURST_INTERVAL] ?: 6,
                 direction = try {
                     ImpairmentDirection.valueOf(prefs[PreferencesKeys.CUSTOM_DIRECTION] ?: ImpairmentDirection.BOTH.name)
                 } catch (e: Exception) {
@@ -72,6 +76,8 @@ class GlitchSettingsRepository(private val context: Context) {
             prefs[PreferencesKeys.CUSTOM_JITTER] = config.randomJitterMs
             prefs[PreferencesKeys.CUSTOM_LOSS] = config.packetLossPercent
             prefs[PreferencesKeys.CUSTOM_BURST_ENABLED] = config.burstInterruptionEnabled
+            prefs[PreferencesKeys.CUSTOM_BURST_DURATION] = config.burstDurationMs
+            prefs[PreferencesKeys.CUSTOM_BURST_INTERVAL] = config.burstIntervalSeconds
             prefs[PreferencesKeys.CUSTOM_DIRECTION] = config.direction.name
             prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] = config.affectTcp
         }

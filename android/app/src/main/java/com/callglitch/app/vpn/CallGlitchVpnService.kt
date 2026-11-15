@@ -37,6 +37,7 @@ class CallGlitchVpnService : VpnService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var timeoutJob: Job? = null
     private var watchdogJob: Job? = null
+    private var startJob: Job? = null
 
     companion object {
         private const val TAG = "CallGlitchVpnService"
@@ -181,8 +182,12 @@ class CallGlitchVpnService : VpnService() {
     }
 
     private fun startVpn(profile: GlitchProfileType) {
-        serviceScope.launch {
+        startJob?.cancel()
+        startJob = serviceScope.launch {
             try {
+                _forwardedPackets.value = 0L
+                _droppedPackets.value = 0L
+
                 val repo = (application as CallGlitchApplication).settingsRepository
                 val selectedApps = repo.selectedPackagesFlow.first()
                 if (selectedApps.isEmpty()) {
@@ -236,9 +241,14 @@ class CallGlitchVpnService : VpnService() {
             setSession("CallGlitch: ${config.profileType.displayName}")
             setBlocking(true)
 
-            // Note: We route 0.0.0.0/0 IPv4 with public DNS servers (8.8.8.8, 1.1.1.1).
-            // We deliberately omit addRoute("::", 0) to ensure the target app uses the IPv4 TUN
-            // without blackholing carrier dual-stack media flows.
+            // Capture IPv6 default route with a valid hexadecimal ULA address so dual-stack
+            // calling apps (WhatsApp, Telegram, Meet, Zoom) cannot bypass the VPN over IPv6.
+            try {
+                addAddress("fd00:ca11:911c::1", 64)
+                addRoute("::", 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 TUN route unavailable on this device, using IPv4 only: ${e.message}")
+            }
 
             // CRITICAL: Route ONLY selected applications via addAllowedApplication()
             val pm = packageManager
@@ -261,7 +271,11 @@ class CallGlitchVpnService : VpnService() {
             throw IllegalStateException("None of the selected applications (${selectedApps.joinToString()}) are currently installed on this device.")
         }
 
+        forwardingEngine?.stop()
+        forwardingEngine = null
         vpnInterface?.close()
+        vpnInterface = null
+
         val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission was approved.")
         vpnInterface = pfd
 
@@ -283,12 +297,12 @@ class CallGlitchVpnService : VpnService() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Underlying network available: $network. Binding sockets.")
-                setUnderlyingNetworks(arrayOf(network))
+                Log.d(TAG, "Underlying physical network available: $network.")
                 forwardingEngine?.onUnderlyingNetworkChanged(network)
             }
 
@@ -297,7 +311,7 @@ class CallGlitchVpnService : VpnService() {
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                setUnderlyingNetworks(arrayOf(network))
+                forwardingEngine?.onUnderlyingNetworkChanged(network)
             }
         }
         cm.registerNetworkCallback(request, networkCallback!!)
@@ -352,6 +366,7 @@ class CallGlitchVpnService : VpnService() {
 
     private fun stopVpn() {
         _isRunning.value = false
+        startJob?.cancel()
         timeoutJob?.cancel()
         watchdogJob?.cancel()
 

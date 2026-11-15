@@ -237,7 +237,7 @@ fun MainScreen(
                                     GlitchProfileType.MILD -> "280ms / 10%"
                                     GlitchProfileType.MODERATE -> "750ms / 35%"
                                     GlitchProfileType.SEVERE -> "2000ms / 75%"
-                                    GlitchProfileType.CUSTOM -> "Custom"
+                                    GlitchProfileType.CUSTOM -> "${customConfig.baseLatencyMs}ms / ${customConfig.packetLossPercent.toInt()}%"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 10.sp,
