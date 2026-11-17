@@ -15,14 +15,21 @@ const fileList = [
   { path: 'app/src/main/java/com/callglitch/app/model/GlitchModels.kt', lang: 'kotlin', desc: 'Data models for profiles, impairment metrics, and installed application metadata' },
   { path: 'app/src/main/java/com/callglitch/app/data/AppDiscoveryRepository.kt', lang: 'kotlin', desc: 'Dynamically discovers installed apps via PackageManager with icon decoding' },
   { path: 'app/src/main/java/com/callglitch/app/data/GlitchSettingsRepository.kt', lang: 'kotlin', desc: 'Jetpack DataStore preferences repository for profile, apps, and timeout persistence' },
-  { path: 'app/src/main/java/com/callglitch/app/vpn/CallGlitchVpnService.kt', lang: 'kotlin', desc: 'Core Android VpnService managing TUN lifecycle, per-app routing, and failsafe watchdog' },
-  { path: 'app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt', lang: 'kotlin', desc: 'Pure Kotlin user-space IPv4 packet parsing, UDP delay/loss impairment queue, and socket forwarding' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/CallGlitchVpnService.kt', lang: 'kotlin', desc: 'Core Android VpnService managing TUN lifecycle, per-app routing, and foreground service' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/VpnSessionController.kt', lang: 'kotlin', desc: 'Serialized Mutex-guarded VPN/Tunnel/Proxy lifecycle state machine and health monitor' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/TunnelEngine.kt', lang: 'kotlin', desc: 'TunnelEngine abstraction and HevTunnelEngine wrapping pinned heiher/hev-socks5-tunnel v2.20.0' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/LocalSocks5ProxyServer.kt', lang: 'kotlin', desc: 'Loopback-only RFC 1928 SOCKS5 proxy (CONNECT + UDP ASSOCIATE, IPv4/IPv6/domain)' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/ImpairmentController.kt', lang: 'kotlin', desc: 'Deterministic UDP loss/burst/delay engine and non-corrupting TCP latency/pacing/pause engine' },
+  { path: 'app/src/main/java/com/callglitch/app/vpn/SocketProtector.kt', lang: 'kotlin', desc: 'Strict VpnService.protect() wrapper preventing outbound proxy routing loops' },
   { path: 'app/src/main/java/com/callglitch/app/tile/GlitchTileService.kt', lang: 'kotlin', desc: 'Android Quick Settings TileService for in-call 1-tap toggling without leaving calling apps' },
   { path: 'app/src/main/java/com/callglitch/app/ui/MainActivity.kt', lang: 'kotlin', desc: 'Single activity hosting Jetpack Compose UI, VPN intent launcher, and error dialogs' },
   { path: 'app/src/main/java/com/callglitch/app/ui/screens/MainScreen.kt', lang: 'kotlin', desc: 'Main Jetpack Compose screen with large tactile toggle, profile cards, and dynamic app selector' },
   { path: 'app/src/main/java/com/callglitch/app/ui/theme/GlitchTheme.kt', lang: 'kotlin', desc: 'Material3 dynamic color theme and typography definitions' },
-  { path: 'app/src/test/java/com/callglitch/app/GlitchConfigTest.kt', lang: 'kotlin', desc: 'Unit tests verifying profile configuration parameters, jitter ranges, and timeout settings' },
-  { path: 'app/src/test/java/com/callglitch/app/AppDiscoveryAndSelectionTest.kt', lang: 'kotlin', desc: 'Unit tests validating dynamic application selection, system filtering, and empty checks' }
+  { path: 'app/src/test/java/com/callglitch/app/GlitchConfigTest.kt', lang: 'kotlin', desc: 'Unit tests verifying profile configuration parameters, TCP pacing, and timeout settings' },
+  { path: 'app/src/test/java/com/callglitch/app/AppDiscoveryAndSelectionTest.kt', lang: 'kotlin', desc: 'Unit tests validating dynamic application selection, system filtering, and empty checks' },
+  { path: 'app/src/test/java/com/callglitch/app/ImpairmentControllerTest.kt', lang: 'kotlin', desc: 'Deterministic tests for UDP loss, burst cycles, DNS exemption, and TCP pacing' },
+  { path: 'app/src/test/java/com/callglitch/app/LocalSocks5ProxyServerTest.kt', lang: 'kotlin', desc: 'Integration tests for RFC 1928 TCP/UDP proxying, IPv4/IPv6, byte integrity, and protect() failures' },
+  { path: 'app/src/test/java/com/callglitch/app/VpnSessionControllerLifecycleTest.kt', lang: 'kotlin', desc: 'Lifecycle tests for 25 start/stop cycles, partial startup rollback, and crash recovery' }
 ];
 
 let tsContent = `export interface AndroidProjectFile {

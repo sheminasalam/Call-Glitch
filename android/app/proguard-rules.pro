@@ -6,3 +6,4 @@
 -keep class com.callglitch.app.vpn.** { *; }
 -keep class com.callglitch.app.tile.** { *; }
 -keep class com.callglitch.app.model.** { *; }
+-keep class hev.htproxy.** { *; }

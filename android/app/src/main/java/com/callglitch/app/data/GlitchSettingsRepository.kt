@@ -25,6 +25,7 @@ class GlitchSettingsRepository(private val context: Context) {
         val CUSTOM_BURST_INTERVAL = intPreferencesKey("custom_burst_interval")
         val CUSTOM_DIRECTION = stringPreferencesKey("custom_direction")
         val CUSTOM_AFFECT_TCP = booleanPreferencesKey("custom_affect_tcp")
+        val CUSTOM_TCP_BANDWIDTH_KBPS = intPreferencesKey("custom_tcp_bandwidth_kbps")
         val SELECTED_PACKAGES = stringSetPreferencesKey("selected_packages")
         val AUTO_TIMEOUT_SECONDS = intPreferencesKey("auto_timeout_seconds")
     }
@@ -52,7 +53,8 @@ class GlitchSettingsRepository(private val context: Context) {
                 } catch (e: Exception) {
                     ImpairmentDirection.BOTH
                 },
-                affectTcp = prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] ?: false
+                affectTcp = prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] ?: true,
+                tcpBandwidthKbps = prefs[PreferencesKeys.CUSTOM_TCP_BANDWIDTH_KBPS] ?: 0
             )
         }
 
@@ -80,6 +82,7 @@ class GlitchSettingsRepository(private val context: Context) {
             prefs[PreferencesKeys.CUSTOM_BURST_INTERVAL] = config.burstIntervalSeconds
             prefs[PreferencesKeys.CUSTOM_DIRECTION] = config.direction.name
             prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] = config.affectTcp
+            prefs[PreferencesKeys.CUSTOM_TCP_BANDWIDTH_KBPS] = config.tcpBandwidthKbps
         }
     }
 

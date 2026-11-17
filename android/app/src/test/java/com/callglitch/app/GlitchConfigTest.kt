@@ -17,7 +17,8 @@ class GlitchConfigTest {
         assertEquals(10.0, mild.packetLossPercent, 0.001)
         assertFalse(mild.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, mild.direction)
-        assertFalse(mild.affectTcp)
+        assertTrue(mild.affectTcp)
+        assertEquals(1200, mild.tcpBandwidthKbps)
     }
 
     @Test
@@ -29,7 +30,8 @@ class GlitchConfigTest {
         assertEquals(35.0, moderate.packetLossPercent, 0.001)
         assertFalse(moderate.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, moderate.direction)
-        assertFalse(moderate.affectTcp)
+        assertTrue(moderate.affectTcp)
+        assertEquals(384, moderate.tcpBandwidthKbps)
     }
 
     @Test
@@ -43,7 +45,8 @@ class GlitchConfigTest {
         assertEquals(2500, severe.burstDurationMs)
         assertEquals(6, severe.burstIntervalSeconds)
         assertEquals(ImpairmentDirection.BOTH, severe.direction)
-        assertFalse(severe.affectTcp)
+        assertTrue(severe.affectTcp)
+        assertEquals(64, severe.tcpBandwidthKbps)
     }
 
     @Test
@@ -54,7 +57,8 @@ class GlitchConfigTest {
             randomJitterMs = 120,
             packetLossPercent = 12.0,
             direction = ImpairmentDirection.OUTGOING,
-            affectTcp = true
+            affectTcp = true,
+            tcpBandwidthKbps = 256
         )
 
         val resolved = GlitchConfig.forType(GlitchProfileType.CUSTOM, customFallback)
@@ -64,5 +68,6 @@ class GlitchConfigTest {
         assertEquals(12.0, resolved.packetLossPercent, 0.001)
         assertEquals(ImpairmentDirection.OUTGOING, resolved.direction)
         assertTrue(resolved.affectTcp)
+        assertEquals(256, resolved.tcpBandwidthKbps)
     }
 }

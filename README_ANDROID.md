@@ -10,10 +10,11 @@ The Android Studio project is located in the **`android/`** directory.
 
 - **IDE:** Android Studio Ladybug (2024.2+) or Hedgehog (2023.1.1+)
 - **JDK:** OpenJDK 17 or Temurin 17
-- **Android SDK:** Compile SDK 35, Target SDK 35, Minimum SDK 26 (Android 8.0 Oreo)
+- **Android SDK:** Compile SDK 35, Target SDK 35, Minimum SDK 29 (Android 10)
 - **Gradle:** 8.10.2 (bundled via official Gradle wrapper)
 - **Android Gradle Plugin (AGP):** 8.7.2
 - **Kotlin:** 2.0.21 with Jetpack Compose Compiler plugin
+- **TUN-to-SOCKS5 Core:** `heiher/hev-socks5-tunnel` v2.20.0 (`android/app/libs/hev-socks5-tunnel-2.20.0.aar`, MIT License)
 
 ---
 
@@ -33,6 +34,8 @@ android/
 ├── gradlew.bat                      # Windows wrapper script
 └── app/
     ├── build.gradle.kts             # App module build configuration
+    ├── libs/
+    │   └── hev-socks5-tunnel-2.20.0.aar # Pinned HevSocks5Tunnel AAR (arm64-v8a, armeabi-v7a, x86, x86_64)
     ├── proguard-rules.pro           # Optimization & R8 keep rules
     └── src/
         ├── main/
@@ -40,9 +43,14 @@ android/
         │   ├── java/com/callglitch/app/
         │   │   ├── CallGlitchApplication.kt
         │   │   ├── model/GlitchModels.kt
+        │   │   ├── data/AppDiscoveryRepository.kt
         │   │   ├── data/GlitchSettingsRepository.kt
         │   │   ├── vpn/CallGlitchVpnService.kt
-        │   │   ├── vpn/PacketForwardingEngine.kt
+        │   │   ├── vpn/VpnSessionController.kt
+        │   │   ├── vpn/TunnelEngine.kt
+        │   │   ├── vpn/LocalSocks5ProxyServer.kt
+        │   │   ├── vpn/ImpairmentController.kt
+        │   │   ├── vpn/SocketProtector.kt
         │   │   ├── tile/GlitchTileService.kt
         │   │   └── ui/
         │   │       ├── MainActivity.kt
@@ -53,7 +61,7 @@ android/
         │       ├── mipmap-anydpi-v26/ # Adaptive launcher icons
         │       ├── values/          # Strings, colors, themes
         │       └── xml/             # Backup & data extraction rules
-        └── test/                    # JUnit unit tests
+        └── test/                    # JUnit unit & local SOCKS5/lifecycle integration tests
 ```
 
 ---

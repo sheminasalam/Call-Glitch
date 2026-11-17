@@ -26,10 +26,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.callglitch.app.data.AppDiscoveryRepository
+import com.callglitch.app.model.DiagnosticsSnapshot
 import com.callglitch.app.model.GlitchConfig
 import com.callglitch.app.model.GlitchProfileType
 import com.callglitch.app.model.ImpairmentDirection
 import com.callglitch.app.model.InstalledAppInfo
+import com.callglitch.app.model.VpnLifecycleState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -41,8 +43,7 @@ fun MainScreen(
     customConfig: GlitchConfig,
     selectedPackages: Set<String>,
     autoTimeout: Int,
-    forwardedPackets: Long,
-    droppedPackets: Long,
+    diagnostics: DiagnosticsSnapshot,
     appDiscoveryRepository: AppDiscoveryRepository,
     forceOpenAppDialog: Boolean = false,
     onAppDialogDismissed: () -> Unit = {},
@@ -99,18 +100,19 @@ fun MainScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // 1. Connection Status Card
+            // 1. Connection Status & Truthful Diagnostics Card
+            val hasFailure = diagnostics.vpnState == VpnLifecycleState.FAILED && diagnostics.lastError != null
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isRunning) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                    containerColor = if (isRunning || hasFailure) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
                     else if (selectedPackages.isEmpty()) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.12f)
                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    if (isRunning) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+                    if (isRunning || hasFailure) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
                     else if (selectedPackages.isEmpty()) MaterialTheme.colorScheme.error.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.outlineVariant
                 )
@@ -124,21 +126,38 @@ fun MainScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isRunning) "${activeProfile.displayName} Impairment Active"
-                            else if (selectedPackages.isEmpty()) "No Target Apps Selected"
-                            else "Normal Network Traffic",
+                            text = when {
+                                hasFailure -> "Fault (${diagnostics.lastErrorComponent ?: "VPN"})"
+                                diagnostics.vpnState == VpnLifecycleState.STARTING -> "Starting Hev Tunnel & Proxy..."
+                                diagnostics.vpnState == VpnLifecycleState.RECONFIGURING -> "Updating Target Apps..."
+                                isRunning -> "${activeProfile.displayName} Impairment Active"
+                                selectedPackages.isEmpty() -> "No Target Apps Selected"
+                                else -> "Normal Network Traffic"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isRunning || selectedPackages.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                            color = if (isRunning || hasFailure || selectedPackages.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(4.dp))
+                        val forwardedKb = diagnostics.forwardedTcpBytes / 1024L
                         Text(
-                            text = if (isRunning) "$forwardedPackets forwarded · $droppedPackets dropped"
-                            else if (selectedPackages.isEmpty()) "Select at least 1 application below before starting"
-                            else "${selectedPackages.size} target apps isolated · VPN Ready",
+                            text = when {
+                                hasFailure -> diagnostics.lastError ?: "Unexpected tunnel failure"
+                                isRunning -> "Tunnel: ${diagnostics.tunnelState.label} · Proxy 127.0.0.1:${diagnostics.proxyPort} (${diagnostics.activeTcpSessions} TCP / ${diagnostics.activeUdpSessions} UDP)"
+                                selectedPackages.isEmpty() -> "Select at least 1 application below before starting"
+                                else -> "${selectedPackages.size} target apps isolated · Hev + SOCKS5 Ready"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (isRunning) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "UDP: ${diagnostics.forwardedUdpDatagrams} fwd / ${diagnostics.droppedUdpDatagrams} drop · TCP: ${forwardedKb} KB (${diagnostics.delayedTcpWrites} paced)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
@@ -148,9 +167,11 @@ fun MainScreen(
                             .size(14.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isRunning) Color(0xFFEF4444)
-                                else if (selectedPackages.isEmpty()) Color(0xFFF59E0B)
-                                else Color(0xFF10B981)
+                                when {
+                                    isRunning || hasFailure -> Color(0xFFEF4444)
+                                    selectedPackages.isEmpty() -> Color(0xFFF59E0B)
+                                    else -> Color(0xFF10B981)
+                                }
                             )
                     )
                 }
@@ -465,11 +486,23 @@ fun MainScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Impair TCP Traffic", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Disabled by default to avoid breaking call signaling/TLS", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Applies safe latency, jitter, pacing, and pauses without corrupting bytes", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = customConfig.affectTcp,
                             onCheckedChange = { onUpdateCustomConfig(customConfig.copy(affectTcp = it)) }
+                        )
+                    }
+
+                    if (customConfig.affectTcp) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val bwLabel = if (customConfig.tcpBandwidthKbps <= 0) "Uncapped (delay/jitter only)" else "${customConfig.tcpBandwidthKbps} Kbps"
+                        Text("TCP Bandwidth Pace: $bwLabel", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Slider(
+                            value = customConfig.tcpBandwidthKbps.toFloat(),
+                            onValueChange = { onUpdateCustomConfig(customConfig.copy(tcpBandwidthKbps = it.toInt())) },
+                            valueRange = 0f..2000f,
+                            steps = 39
                         )
                     }
                 }

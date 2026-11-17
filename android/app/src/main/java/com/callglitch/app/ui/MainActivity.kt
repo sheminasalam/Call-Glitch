@@ -66,8 +66,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val isRunning by CallGlitchVpnService.isRunning.collectAsState()
                     val activeProfile by CallGlitchVpnService.activeProfile.collectAsState()
-                    val forwardedCount by CallGlitchVpnService.forwardedPackets.collectAsState()
-                    val droppedCount by CallGlitchVpnService.droppedPackets.collectAsState()
+                    val diagnostics by CallGlitchVpnService.diagnostics.collectAsState()
 
                     val savedProfile by settingsRepo.activeProfileFlow.collectAsState(initial = GlitchProfileType.MODERATE)
                     val customConfig by settingsRepo.customConfigFlow.collectAsState(initial = GlitchConfig())
@@ -84,8 +83,7 @@ class MainActivity : ComponentActivity() {
                         customConfig = customConfig,
                         selectedPackages = selectedPackages,
                         autoTimeout = autoTimeout,
-                        forwardedPackets = forwardedCount,
-                        droppedPackets = droppedCount,
+                        diagnostics = diagnostics,
                         appDiscoveryRepository = appDiscoveryRepo,
                         forceOpenAppDialog = triggerOpenAppDialog,
                         onAppDialogDismissed = { triggerOpenAppDialog = false },

@@ -13,6 +13,46 @@ enum class ImpairmentDirection(val displayName: String) {
     OUTGOING("Outgoing Only")
 }
 
+enum class VpnLifecycleState(val label: String) {
+    STOPPED("Stopped"),
+    STARTING("Starting"),
+    RUNNING("Running"),
+    RECONFIGURING("Reconfiguring"),
+    STOPPING("Stopping"),
+    FAILED("Failed")
+}
+
+enum class ComponentHealthState(val label: String) {
+    INACTIVE("Inactive"),
+    STARTING("Starting"),
+    RUNNING("Running"),
+    FAILED("Failed"),
+    STOPPED("Stopped")
+}
+
+data class DiagnosticsSnapshot(
+    val vpnState: VpnLifecycleState = VpnLifecycleState.STOPPED,
+    val tunnelState: ComponentHealthState = ComponentHealthState.INACTIVE,
+    val proxyState: ComponentHealthState = ComponentHealthState.INACTIVE,
+    val proxyPort: Int = 0,
+    val activeTcpSessions: Int = 0,
+    val activeUdpSessions: Int = 0,
+    val forwardedUdpDatagrams: Long = 0L,
+    val droppedUdpDatagrams: Long = 0L,
+    val forwardedTcpBytes: Long = 0L,
+    val delayedTcpWrites: Long = 0L,
+    val throttledTcpEvents: Long = 0L,
+    val tunnelTxPackets: Long = 0L,
+    val tunnelTxBytes: Long = 0L,
+    val tunnelRxPackets: Long = 0L,
+    val tunnelRxBytes: Long = 0L,
+    val lastError: String? = null,
+    val lastErrorComponent: String? = null
+) {
+    val totalForwardedCount: Long
+        get() = forwardedUdpDatagrams + delayedTcpWrites
+}
+
 data class GlitchConfig(
     val profileType: GlitchProfileType = GlitchProfileType.MODERATE,
     val baseLatencyMs: Int = 220,
@@ -22,7 +62,8 @@ data class GlitchConfig(
     val burstDurationMs: Int = 800,
     val burstIntervalSeconds: Int = 12,
     val direction: ImpairmentDirection = ImpairmentDirection.BOTH,
-    val affectTcp: Boolean = false,
+    val affectTcp: Boolean = true,
+    val tcpBandwidthKbps: Int = 0, // 0 means no explicit bandwidth cap (latency/jitter/pauses only)
     val timeoutSeconds: Int = 0 // 0 means no auto-timeout
 ) {
     companion object {
@@ -33,7 +74,8 @@ data class GlitchConfig(
             packetLossPercent = 10.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 1200
         )
 
         val MODERATE = GlitchConfig(
@@ -43,7 +85,8 @@ data class GlitchConfig(
             packetLossPercent = 35.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 384
         )
 
         val SEVERE = GlitchConfig(
@@ -55,7 +98,8 @@ data class GlitchConfig(
             burstDurationMs = 2500,
             burstIntervalSeconds = 6,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 64
         )
 
         fun forType(type: GlitchProfileType, customFallback: GlitchConfig): GlitchConfig {
@@ -75,4 +119,3 @@ data class InstalledAppInfo(
     val isSystemApp: Boolean = false,
     val hasLauncher: Boolean = true
 )
-

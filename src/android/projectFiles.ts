@@ -22,7 +22,7 @@ android {
 
     defaultConfig {
         applicationId = "com.callglitch.app"
-        minSdk = 26
+        minSdk = 29
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
@@ -70,6 +70,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/hev-socks5-tunnel-2.20.0.aar"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -324,6 +325,46 @@ enum class ImpairmentDirection(val displayName: String) {
     OUTGOING("Outgoing Only")
 }
 
+enum class VpnLifecycleState(val label: String) {
+    STOPPED("Stopped"),
+    STARTING("Starting"),
+    RUNNING("Running"),
+    RECONFIGURING("Reconfiguring"),
+    STOPPING("Stopping"),
+    FAILED("Failed")
+}
+
+enum class ComponentHealthState(val label: String) {
+    INACTIVE("Inactive"),
+    STARTING("Starting"),
+    RUNNING("Running"),
+    FAILED("Failed"),
+    STOPPED("Stopped")
+}
+
+data class DiagnosticsSnapshot(
+    val vpnState: VpnLifecycleState = VpnLifecycleState.STOPPED,
+    val tunnelState: ComponentHealthState = ComponentHealthState.INACTIVE,
+    val proxyState: ComponentHealthState = ComponentHealthState.INACTIVE,
+    val proxyPort: Int = 0,
+    val activeTcpSessions: Int = 0,
+    val activeUdpSessions: Int = 0,
+    val forwardedUdpDatagrams: Long = 0L,
+    val droppedUdpDatagrams: Long = 0L,
+    val forwardedTcpBytes: Long = 0L,
+    val delayedTcpWrites: Long = 0L,
+    val throttledTcpEvents: Long = 0L,
+    val tunnelTxPackets: Long = 0L,
+    val tunnelTxBytes: Long = 0L,
+    val tunnelRxPackets: Long = 0L,
+    val tunnelRxBytes: Long = 0L,
+    val lastError: String? = null,
+    val lastErrorComponent: String? = null
+) {
+    val totalForwardedCount: Long
+        get() = forwardedUdpDatagrams + delayedTcpWrites
+}
+
 data class GlitchConfig(
     val profileType: GlitchProfileType = GlitchProfileType.MODERATE,
     val baseLatencyMs: Int = 220,
@@ -333,7 +374,8 @@ data class GlitchConfig(
     val burstDurationMs: Int = 800,
     val burstIntervalSeconds: Int = 12,
     val direction: ImpairmentDirection = ImpairmentDirection.BOTH,
-    val affectTcp: Boolean = false,
+    val affectTcp: Boolean = true,
+    val tcpBandwidthKbps: Int = 0, // 0 means no explicit bandwidth cap (latency/jitter/pauses only)
     val timeoutSeconds: Int = 0 // 0 means no auto-timeout
 ) {
     companion object {
@@ -344,7 +386,8 @@ data class GlitchConfig(
             packetLossPercent = 10.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 1200
         )
 
         val MODERATE = GlitchConfig(
@@ -354,7 +397,8 @@ data class GlitchConfig(
             packetLossPercent = 35.0,
             burstInterruptionEnabled = false,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 384
         )
 
         val SEVERE = GlitchConfig(
@@ -366,7 +410,8 @@ data class GlitchConfig(
             burstDurationMs = 2500,
             burstIntervalSeconds = 6,
             direction = ImpairmentDirection.BOTH,
-            affectTcp = false
+            affectTcp = true,
+            tcpBandwidthKbps = 64
         )
 
         fun forType(type: GlitchProfileType, customFallback: GlitchConfig): GlitchConfig {
@@ -386,7 +431,6 @@ data class InstalledAppInfo(
     val isSystemApp: Boolean = false,
     val hasLauncher: Boolean = true
 )
-
 `
   },
   {
@@ -518,6 +562,7 @@ class GlitchSettingsRepository(private val context: Context) {
         val CUSTOM_BURST_INTERVAL = intPreferencesKey("custom_burst_interval")
         val CUSTOM_DIRECTION = stringPreferencesKey("custom_direction")
         val CUSTOM_AFFECT_TCP = booleanPreferencesKey("custom_affect_tcp")
+        val CUSTOM_TCP_BANDWIDTH_KBPS = intPreferencesKey("custom_tcp_bandwidth_kbps")
         val SELECTED_PACKAGES = stringSetPreferencesKey("selected_packages")
         val AUTO_TIMEOUT_SECONDS = intPreferencesKey("auto_timeout_seconds")
     }
@@ -545,7 +590,8 @@ class GlitchSettingsRepository(private val context: Context) {
                 } catch (e: Exception) {
                     ImpairmentDirection.BOTH
                 },
-                affectTcp = prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] ?: false
+                affectTcp = prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] ?: true,
+                tcpBandwidthKbps = prefs[PreferencesKeys.CUSTOM_TCP_BANDWIDTH_KBPS] ?: 0
             )
         }
 
@@ -573,6 +619,7 @@ class GlitchSettingsRepository(private val context: Context) {
             prefs[PreferencesKeys.CUSTOM_BURST_INTERVAL] = config.burstIntervalSeconds
             prefs[PreferencesKeys.CUSTOM_DIRECTION] = config.direction.name
             prefs[PreferencesKeys.CUSTOM_AFFECT_TCP] = config.affectTcp
+            prefs[PreferencesKeys.CUSTOM_TCP_BANDWIDTH_KBPS] = config.tcpBandwidthKbps
         }
     }
 
@@ -589,12 +636,12 @@ class GlitchSettingsRepository(private val context: Context) {
   {
     path: "app/src/main/java/com/callglitch/app/vpn/CallGlitchVpnService.kt",
     language: "kotlin",
-    description: "Core Android VpnService managing TUN lifecycle, per-app routing, and failsafe watchdog",
+    description: "Core Android VpnService managing TUN lifecycle, per-app routing, and foreground service",
     content: `package com.callglitch.app.vpn
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service.STOP_FOREGROUND_REMOVE
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -610,8 +657,10 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.callglitch.app.CallGlitchApplication
 import com.callglitch.app.R
+import com.callglitch.app.model.DiagnosticsSnapshot
 import com.callglitch.app.model.GlitchConfig
 import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.VpnLifecycleState
 import com.callglitch.app.tile.GlitchTileService
 import com.callglitch.app.ui.MainActivity
 import kotlinx.coroutines.*
@@ -619,17 +668,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
-class CallGlitchVpnService : VpnService() {
+class CallGlitchVpnService : VpnService(), TunInterfaceProvider {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var forwardingEngine: PacketForwardingEngine? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var timeoutJob: Job? = null
-    private var watchdogJob: Job? = null
-    private var startJob: Job? = null
+
+    private lateinit var sessionController: VpnSessionController
 
     companion object {
         private const val TAG = "CallGlitchVpnService"
@@ -651,6 +699,9 @@ class CallGlitchVpnService : VpnService() {
 
         private val _forwardedPackets = MutableStateFlow(0L)
         val forwardedPackets: StateFlow<Long> = _forwardedPackets.asStateFlow()
+
+        private val _diagnostics = MutableStateFlow(DiagnosticsSnapshot())
+        val diagnostics: StateFlow<DiagnosticsSnapshot> = _diagnostics.asStateFlow()
 
         private val _lastErrorMessage = MutableStateFlow<String?>(null)
         val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
@@ -681,6 +732,17 @@ class CallGlitchVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        val confPath = File(cacheDir, "hev-socks5-tunnel.yml").absolutePath
+        sessionController = VpnSessionController(
+            tunProvider = this,
+            socketProtector = VpnServiceSocketProtector(this),
+            tunnelEngine = HevTunnelEngine(),
+            configFilePath = confPath,
+            scope = serviceScope,
+            onStateChanged = { snapshot ->
+                onDiagnosticsUpdated(snapshot)
+            }
+        )
         registerNetworkCallback()
     }
 
@@ -688,7 +750,10 @@ class CallGlitchVpnService : VpnService() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop command received. Priority STOP teardown initiated.")
-                stopVpn()
+                serviceScope.launch {
+                    sessionController.stop()
+                    finishServiceShutdown()
+                }
                 return START_NOT_STICKY
             }
             ACTION_UPDATE_PROFILE -> {
@@ -701,7 +766,7 @@ class CallGlitchVpnService : VpnService() {
                             val repo = (application as CallGlitchApplication).settingsRepository
                             val custom = repo.customConfigFlow.first()
                             val config = GlitchConfig.forType(profile, custom)
-                            forwardingEngine?.updateConfig(config)
+                            sessionController.updateConfig(config)
                             updateNotification(profile)
                             GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
                         }
@@ -712,24 +777,20 @@ class CallGlitchVpnService : VpnService() {
                 return START_STICKY
             }
             ACTION_UPDATE_APPS -> {
-                if (_isRunning.value) {
-                    serviceScope.launch {
-                        try {
-                            val repo = (application as CallGlitchApplication).settingsRepository
-                            val selectedApps = repo.selectedPackagesFlow.first()
-                            if (selectedApps.isEmpty()) {
-                                Log.w(TAG, "All target applications deselected while active. Stopping VPN.")
-                                stopVpn()
-                                return@launch
-                            }
-                            val custom = repo.customConfigFlow.first()
-                            val config = GlitchConfig.forType(_activeProfile.value, custom)
-                            establishVpn(selectedApps, config)
-                            Log.i(TAG, "Re-established VPN TUN with updated apps: $selectedApps")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error updating apps on active VPN: \${e.message}", e)
-                            stopVpn()
+                serviceScope.launch {
+                    try {
+                        val repo = (application as CallGlitchApplication).settingsRepository
+                        val selectedApps = repo.selectedPackagesFlow.first()
+                        val result = sessionController.updateSelectedApps(selectedApps)
+                        if (selectedApps.isEmpty() || result.isFailure) {
+                            finishServiceShutdown()
+                        } else {
+                            Log.i(TAG, "Updated VPN allowed applications: $selectedApps")
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error updating apps on active VPN: \${e.message}", e)
+                        sessionController.stop()
+                        finishServiceShutdown()
                     }
                 }
                 return START_STICKY
@@ -742,11 +803,100 @@ class CallGlitchVpnService : VpnService() {
                 _activeProfile.value = profile
 
                 startForegroundSafely(profile)
-                startVpn(profile)
+                serviceScope.launch {
+                    val repo = (application as CallGlitchApplication).settingsRepository
+                    val selectedApps = repo.selectedPackagesFlow.first()
+                    val custom = repo.customConfigFlow.first()
+                    val config = GlitchConfig.forType(profile, custom)
+                    val timeoutSec = repo.autoTimeoutSecondsFlow.first()
+
+                    val result = sessionController.start(selectedApps, config, timeoutSec)
+                    if (result.isFailure) {
+                        Log.e(TAG, "Failed to start Call Glitch VPN: \${result.exceptionOrNull()?.message}")
+                        finishServiceShutdown()
+                    } else {
+                        _lastErrorMessage.value = null
+                        updateNotification(profile)
+                    }
+                }
                 return START_STICKY
             }
         }
         return START_NOT_STICKY
+    }
+
+    override fun establish(selectedApps: Set<String>, config: GlitchConfig): TunHandle {
+        if (selectedApps.isEmpty()) {
+            throw IllegalStateException("No target applications selected. Please select at least one application.")
+        }
+
+        var allowedCount = 0
+        val builder = Builder().apply {
+            setMtu(1500)
+            addAddress("10.240.0.1", 24)
+            addDnsServer("8.8.8.8")
+            addDnsServer("1.1.1.1")
+            addRoute("0.0.0.0", 0)
+            setSession("CallGlitch: \${config.profileType.displayName}")
+            // HevSocks5Tunnel uses non-blocking TUN I/O (ioctl FIONBIO).
+            setBlocking(false)
+
+            // Capture IPv6 default route and IPv6 DNS so dual-stack calling apps cannot bypass impairment.
+            try {
+                addAddress("fd00:ca11:911c::1", 64)
+                addDnsServer("2001:4860:4860::8888")
+                addRoute("::", 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 TUN route unavailable on this device, continuing with IPv4: \${e.message}")
+            }
+
+            // Route ONLY selected target applications (never Call Glitch itself).
+            val pm = packageManager
+            for (pkg in selectedApps) {
+                if (pkg == packageName) continue
+                try {
+                    pm.getPackageInfo(pkg, 0)
+                    addAllowedApplication(pkg)
+                    allowedCount++
+                } catch (_: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "Selected app not installed on device, skipping: $pkg")
+                }
+            }
+        }
+
+        if (allowedCount == 0) {
+            throw IllegalStateException(
+                "None of the selected applications (\${selectedApps.joinToString()}) are currently installed on this device."
+            )
+        }
+
+        val pfd = builder.establish()
+            ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission is approved.")
+
+        Log.i(TAG, "Established VpnService TUN (fd=\${pfd.fd}, allowedApps=$allowedCount)")
+        return ParcelTunHandle(pfd)
+    }
+
+    private fun onDiagnosticsUpdated(snapshot: DiagnosticsSnapshot) {
+        _diagnostics.value = snapshot
+        _forwardedPackets.value = snapshot.totalForwardedCount
+        _droppedPackets.value = snapshot.droppedUdpDatagrams
+
+        val nowRunning = snapshot.vpnState == VpnLifecycleState.RUNNING
+        val wasRunning = _isRunning.value
+        _isRunning.value = nowRunning
+
+        if (snapshot.lastError != null) {
+            val componentPrefix = snapshot.lastErrorComponent?.let { "[$it] " } ?: ""
+            _lastErrorMessage.value = "$componentPrefix\${snapshot.lastError}"
+        }
+
+        if (wasRunning != nowRunning) {
+            GlitchTileService.requestTileUpdate(this)
+            if (!nowRunning && (snapshot.vpnState == VpnLifecycleState.STOPPED || snapshot.vpnState == VpnLifecycleState.FAILED)) {
+                finishServiceShutdown()
+            }
+        }
     }
 
     private fun startForegroundSafely(profile: GlitchProfileType) {
@@ -765,124 +915,8 @@ class CallGlitchVpnService : VpnService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed: \${e.message}", e)
-            try {
-                startForeground(NOTIFICATION_ID, notification)
-            } catch (ignored: Exception) {
-                Log.w(TAG, "Notification fallback omitted.")
-            }
+            runCatching { startForeground(NOTIFICATION_ID, notification) }
         }
-    }
-
-    private fun startVpn(profile: GlitchProfileType) {
-        startJob?.cancel()
-        startJob = serviceScope.launch {
-            try {
-                _forwardedPackets.value = 0L
-                _droppedPackets.value = 0L
-
-                val repo = (application as CallGlitchApplication).settingsRepository
-                val selectedApps = repo.selectedPackagesFlow.first()
-                if (selectedApps.isEmpty()) {
-                    val err = "No target applications selected. Please select at least one application."
-                    Log.e(TAG, err)
-                    _lastErrorMessage.value = err
-                    stopVpn()
-                    return@launch
-                }
-                val custom = repo.customConfigFlow.first()
-                val config = GlitchConfig.forType(profile, custom)
-                val timeoutSec = repo.autoTimeoutSecondsFlow.first()
-
-                establishVpn(selectedApps, config)
-                _isRunning.value = true
-                _lastErrorMessage.value = null
-                GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
-
-                // Schedule auto-timeout if configured
-                if (timeoutSec > 0) {
-                    timeoutJob?.cancel()
-                    timeoutJob = serviceScope.launch {
-                        delay(timeoutSec * 1000L)
-                        Log.i(TAG, "Auto-timeout of $timeoutSec seconds reached. Restoring normal network.")
-                        stopVpn()
-                    }
-                }
-
-                // Start watchdog for stalled forwarding
-                startWatchdog()
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start VPN: \${e.message}", e)
-                _lastErrorMessage.value = e.message ?: "Failed to establish VPN interface"
-                stopVpn()
-            }
-        }
-    }
-
-    private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
-        if (selectedApps.isEmpty()) {
-            throw IllegalStateException("No target applications selected. Please select at least one application.")
-        }
-        var allowedCount = 0
-        val builder = Builder().apply {
-            setMtu(1500)
-            addAddress("10.240.0.1", 24)
-            addDnsServer("8.8.8.8")
-            addDnsServer("1.1.1.1")
-            addRoute("0.0.0.0", 0)
-            setSession("CallGlitch: \${config.profileType.displayName}")
-            setBlocking(true)
-
-            // Capture IPv6 default route with a valid hexadecimal ULA address so dual-stack
-            // calling apps (WhatsApp, Telegram, Meet, Zoom) cannot bypass the VPN over IPv6.
-            try {
-                addAddress("fd00:ca11:911c::1", 64)
-                addRoute("::", 0)
-            } catch (e: Exception) {
-                Log.w(TAG, "IPv6 TUN route unavailable on this device, using IPv4 only: \${e.message}")
-            }
-
-            // CRITICAL: Route ONLY selected applications via addAllowedApplication()
-            val pm = packageManager
-            for (pkg in selectedApps) {
-                // Ensure we never route Call Glitch through its own VPN
-                if (pkg == packageName) continue
-
-                try {
-                    pm.getPackageInfo(pkg, 0)
-                    addAllowedApplication(pkg)
-                    allowedCount++
-                    Log.d(TAG, "Routing allowed application through CallGlitch TUN: $pkg")
-                } catch (e: PackageManager.NameNotFoundException) {
-                    Log.w(TAG, "Selected app not found on device, skipping: $pkg")
-                }
-            }
-        }
-
-        if (allowedCount == 0) {
-            throw IllegalStateException("None of the selected applications (\${selectedApps.joinToString()}) are currently installed on this device.")
-        }
-
-        forwardingEngine?.stop()
-        forwardingEngine = null
-        vpnInterface?.close()
-        vpnInterface = null
-
-        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission was approved.")
-        vpnInterface = pfd
-
-        // Initialize user-space forwarding engine with impairment
-        forwardingEngine = PacketForwardingEngine(
-            vpnService = this,
-            tunFd = pfd.fileDescriptor,
-            config = config,
-            onStatsUpdate = { forwarded, dropped ->
-                _forwardedPackets.value = forwarded
-                _droppedPackets.value = dropped
-            }
-        ).also { it.start() }
-
-        Log.i(TAG, "VPN TUN interface established successfully. Allowed apps: $allowedCount")
     }
 
     private fun registerNetworkCallback() {
@@ -894,34 +928,28 @@ class CallGlitchVpnService : VpnService() {
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Underlying physical network available: $network.")
-                forwardingEngine?.onUnderlyingNetworkChanged(network)
+                Log.d(TAG, "Underlying physical network available: $network")
+                serviceScope.launch {
+                    sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = true)
+                }
             }
 
             override fun onLost(network: Network) {
-                Log.d(TAG, "Underlying network lost: $network.")
+                Log.d(TAG, "Underlying physical network lost: $network")
+                serviceScope.launch {
+                    sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = false)
+                }
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                forwardingEngine?.onUnderlyingNetworkChanged(network)
-            }
-        }
-        cm.registerNetworkCallback(request, networkCallback!!)
-    }
-
-    private fun startWatchdog() {
-        watchdogJob?.cancel()
-        watchdogJob = serviceScope.launch {
-            while (isActive) {
-                delay(5000L)
-                val isAlive = forwardingEngine?.isHealthy() ?: false
-                if (!isAlive && _isRunning.value) {
-                    Log.e(TAG, "Watchdog detected stalled forwarding engine. Tearing down immediately to prevent blackholing.")
-                    stopVpn()
-                    break
+                if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    serviceScope.launch {
+                        sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = true)
+                    }
                 }
             }
         }
+        runCatching { cm.registerNetworkCallback(request, networkCallback!!) }
     }
 
     private fun buildNotification(profile: GlitchProfileType): Notification {
@@ -942,7 +970,7 @@ class CallGlitchVpnService : VpnService() {
         return NotificationCompat.Builder(this, CallGlitchApplication.CHANNEL_ID_VPN)
             .setSmallIcon(R.drawable.ic_glitch_notification)
             .setContentTitle("Call Glitch Active: \${profile.displayName}")
-            .setContentText("Impairing call network. Normal network will restore on STOP.")
+            .setContentText("Routing selected apps via HevSocks5Tunnel + local impairment proxy.")
             .setSubText("Call Glitch")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -952,1345 +980,1832 @@ class CallGlitchVpnService : VpnService() {
     }
 
     private fun updateNotification(profile: GlitchProfileType) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(profile))
     }
 
-    private fun stopVpn() {
+    private fun finishServiceShutdown() {
         _isRunning.value = false
-        startJob?.cancel()
-        timeoutJob?.cancel()
-        watchdogJob?.cancel()
-
-        try {
-            // STOP priority: Immediately shutdown forwarding engine without waiting for queued packets
-            forwardingEngine?.stop()
-            forwardingEngine = null
-
-            vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing VPN interface: \${e.message}")
-        } finally {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            GlitchTileService.requestTileUpdate(this)
-            Log.i(TAG, "Call Glitch VPN stopped. Ordinary networking completely restored.")
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        GlitchTileService.requestTileUpdate(this)
     }
 
     override fun onRevoke() {
         Log.w(TAG, "VpnService.onRevoke() triggered by system. Failsafe shutdown.")
-        stopVpn()
+        serviceScope.launch {
+            sessionController.stop()
+            finishServiceShutdown()
+        }
         super.onRevoke()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopVpn()
+        runBlocking {
+            withTimeoutOrNull(3_000L) {
+                sessionController.stop()
+            }
+        }
         serviceScope.cancel()
         networkCallback?.let {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.unregisterNetworkCallback(it)
+            runCatching { cm.unregisterNetworkCallback(it) }
+        }
+        GlitchTileService.requestTileUpdate(this)
+    }
+
+    private class ParcelTunHandle(
+        private val pfd: ParcelFileDescriptor
+    ) : TunHandle {
+        private val closed = AtomicBoolean(false)
+        override val fd: Int get() = pfd.fd
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) {
+                pfd.close()
+            }
         }
     }
 }
 `
   },
   {
-    path: "app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt",
+    path: "app/src/main/java/com/callglitch/app/vpn/VpnSessionController.kt",
     language: "kotlin",
-    description: "Pure Kotlin user-space IPv4 packet parsing, UDP delay/loss impairment queue, and socket forwarding",
+    description: "Serialized Mutex-guarded VPN/Tunnel/Proxy lifecycle state machine and health monitor",
     content: `package com.callglitch.app.vpn
 
-import android.net.Network
-import android.net.VpnService
-import android.util.Log
+import com.callglitch.app.model.ComponentHealthState
+import com.callglitch.app.model.DiagnosticsSnapshot
 import com.callglitch.app.model.GlitchConfig
-import com.callglitch.app.model.ImpairmentDirection
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.VpnLifecycleState
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.Closeable
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Represents an established TUN interface handle whose close() is strictly idempotent.
+ */
+interface TunHandle : Closeable {
+    val fd: Int
+}
+
+interface TunInterfaceProvider {
+    fun establish(selectedApps: Set<String>, config: GlitchConfig): TunHandle
+}
+
+/**
+ * Serialized, atomic lifecycle orchestrator coordinating:
+ * 1. Local loopback SOCKS5 proxy + impairment controller
+ * 2. VpnService TUN interface establishment
+ * 3. HevSocks5Tunnel start/stop and worker health monitoring
+ *
+ * All state transitions run sequentially under [lifecycleMutex], guaranteeing no partial startup leaks,
+ * no double-closing of the TUN FD, safe repeated start/stop cycles, and clean rollback on errors.
+ */
+class VpnSessionController(
+    private val tunProvider: TunInterfaceProvider,
+    private val socketProtector: SocketProtector,
+    private val tunnelEngine: TunnelEngine,
+    private val configFilePath: String,
+    private val scope: CoroutineScope,
+    private val timeProvider: TimeProvider = SystemTimeProvider,
+    private val randomProvider: RandomProvider = DefaultRandomProvider,
+    private val requestedProxyPort: Int = 0,
+    private val startupVerifyDelayMs: Long = 35L,
+    private val watchdogIntervalMs: Long = 1_000L,
+    private val onStateChanged: (DiagnosticsSnapshot) -> Unit = {}
+) {
+    private val lifecycleMutex = Mutex()
+
+    private val _diagnostics = MutableStateFlow(DiagnosticsSnapshot())
+    val diagnostics: StateFlow<DiagnosticsSnapshot> = _diagnostics.asStateFlow()
+
+    private val _activeProfile = MutableStateFlow(GlitchProfileType.MODERATE)
+    val activeProfile: StateFlow<GlitchProfileType> = _activeProfile.asStateFlow()
+
+    private var impairmentController: ImpairmentController? = null
+    private var proxyServer: LocalSocks5ProxyServer? = null
+    private var currentTun: TunHandle? = null
+    private val tunClosed = AtomicBoolean(true)
+    private var tunnelStartAttempted: Boolean = false
+
+    private var activeApps: Set<String> = emptySet()
+    private var activeConfig: GlitchConfig = GlitchConfig()
+
+    private var watchdogJob: Job? = null
+    private var timeoutJob: Job? = null
+
+    suspend fun start(
+        selectedApps: Set<String>,
+        config: GlitchConfig,
+        timeoutSeconds: Int = 0
+    ): Result<Unit> = lifecycleMutex.withLock {
+        return startLocked(selectedApps, config, timeoutSeconds)
+    }
+
+    private suspend fun startLocked(
+        selectedApps: Set<String>,
+        config: GlitchConfig,
+        timeoutSeconds: Int
+    ): Result<Unit> {
+        if (selectedApps.isEmpty()) {
+            val err = "No target applications selected. Please select at least one application."
+            publishFailure("Configuration", err)
+            return Result.failure(IllegalArgumentException(err))
+        }
+
+        // Defensively tear down any prior resources cleanly before starting fresh.
+        if (_diagnostics.value.vpnState == VpnLifecycleState.RUNNING ||
+            currentTun != null ||
+            proxyServer != null ||
+            tunnelEngine.isRunning()
+        ) {
+            stopLocked(preserveFailure = false)
+        }
+
+        _activeProfile.value = config.profileType
+        activeApps = selectedApps.toSet()
+        activeConfig = config
+
+        publishSnapshot(
+            DiagnosticsSnapshot(
+                vpnState = VpnLifecycleState.STARTING,
+                tunnelState = ComponentHealthState.INACTIVE,
+                proxyState = ComponentHealthState.STARTING
+            )
+        )
+
+        val impairment = ImpairmentController(
+            initialConfig = config,
+            timeProvider = timeProvider,
+            randomProvider = randomProvider
+        )
+        impairmentController = impairment
+
+        // Step 1: Start local loopback SOCKS5 proxy and verify port readiness
+        val proxy = LocalSocks5ProxyServer(
+            impairmentController = impairment,
+            socketProtector = socketProtector,
+            requestedPort = requestedProxyPort,
+            onError = { component, message ->
+                handleComponentError(component, message)
+            }
+        )
+
+        val boundPort = try {
+            proxy.start()
+        } catch (e: Exception) {
+            runCatching { proxy.stop() }
+            impairmentController = null
+            val msg = "Local SOCKS5 proxy failed to start: \${e.message ?: "unknown error"}"
+            publishFailure("LocalSocks5Proxy", msg)
+            return Result.failure(IllegalStateException(msg, e))
+        }
+
+        if (!proxy.isRunning || boundPort !in 1..65535) {
+            runCatching { proxy.stop() }
+            impairmentController = null
+            val msg = "Local SOCKS5 proxy failed readiness verification on 127.0.0.1"
+            publishFailure("LocalSocks5Proxy", msg)
+            return Result.failure(IllegalStateException(msg))
+        }
+        proxyServer = proxy
+
+        publishSnapshot(
+            _diagnostics.value.copy(
+                proxyState = ComponentHealthState.RUNNING,
+                proxyPort = boundPort,
+                tunnelState = ComponentHealthState.STARTING
+            )
+        )
+
+        // Step 2: Establish TUN interface for selected apps
+        val tun = try {
+            tunProvider.establish(selectedApps, config)
+        } catch (e: Exception) {
+            runCatching { proxy.stop() }
+            proxyServer = null
+            impairmentController = null
+            val msg = e.message ?: "Failed to establish VpnService TUN interface"
+            publishFailure("VpnInterface", msg)
+            return Result.failure(e)
+        }
+        currentTun = tun
+        tunClosed.set(false)
+
+        // Step 3: Start HevSocks5Tunnel and verify the native worker stays alive
+        tunnelStartAttempted = true
+        val tunnelStarted = try {
+            tunnelEngine.start(
+                TunnelConfig(
+                    tunFd = tun.fd,
+                    mtu = 1500,
+                    socks5Address = "127.0.0.1",
+                    socks5Port = boundPort,
+                    configFilePath = configFilePath
+                )
+            )
+        } catch (e: Exception) {
+            rollbackPartialStartup("HevSocks5Tunnel", "HevSocks5Tunnel threw on startup: \${e.message}")
+            return Result.failure(e)
+        }
+
+        if (!tunnelStarted) {
+            rollbackPartialStartup("HevSocks5Tunnel", "HevSocks5Tunnel failed to start native worker.")
+            return Result.failure(IllegalStateException("HevSocks5Tunnel failed to start native worker."))
+        }
+
+        if (startupVerifyDelayMs > 0L) {
+            delay(startupVerifyDelayMs)
+        }
+
+        if (!tunnelEngine.isRunning()) {
+            rollbackPartialStartup(
+                "HevSocks5Tunnel",
+                "HevSocks5Tunnel terminated immediately after startup."
+            )
+            return Result.failure(IllegalStateException("HevSocks5Tunnel terminated immediately after startup."))
+        }
+
+        if (!proxy.isRunning) {
+            rollbackPartialStartup(
+                "LocalSocks5Proxy",
+                "Local SOCKS5 proxy stopped unexpectedly during startup."
+            )
+            return Result.failure(IllegalStateException("Local SOCKS5 proxy stopped unexpectedly during startup."))
+        }
+
+        publishSnapshot(
+            DiagnosticsSnapshot(
+                vpnState = VpnLifecycleState.RUNNING,
+                tunnelState = ComponentHealthState.RUNNING,
+                proxyState = ComponentHealthState.RUNNING,
+                proxyPort = boundPort
+            )
+        )
+
+        startWatchdogLocked()
+        scheduleTimeoutLocked(timeoutSeconds)
+        return Result.success(Unit)
+    }
+
+    suspend fun stop(): Unit = lifecycleMutex.withLock {
+        stopLocked(preserveFailure = false)
+    }
+
+    suspend fun updateConfig(newConfig: GlitchConfig): Unit = lifecycleMutex.withLock {
+        activeConfig = newConfig
+        _activeProfile.value = newConfig.profileType
+        impairmentController?.updateConfig(newConfig)
+    }
+
+    suspend fun updateSelectedApps(newApps: Set<String>): Result<Unit> = lifecycleMutex.withLock {
+        if (_diagnostics.value.vpnState != VpnLifecycleState.RUNNING) {
+            activeApps = newApps.toSet()
+            return@withLock Result.success(Unit)
+        }
+
+        if (newApps.isEmpty()) {
+            stopLocked(preserveFailure = false)
+            return@withLock Result.success(Unit)
+        }
+
+        val proxy = proxyServer
+        if (proxy == null || !proxy.isRunning) {
+            return@withLock startLocked(newApps, activeConfig, 0)
+        }
+
+        publishSnapshot(
+            _diagnostics.value.copy(
+                vpnState = VpnLifecycleState.RECONFIGURING,
+                tunnelState = ComponentHealthState.STARTING
+            )
+        )
+
+        // Stop Hev first so it releases the old TUN FD cleanly, then close old TUN FD once.
+        if (tunnelStartAttempted || tunnelEngine.isRunning()) {
+            runCatching { tunnelEngine.stop() }
+            tunnelStartAttempted = false
+        }
+        closeCurrentTunOnce()
+        proxy.resetActiveSessionsOnNetworkChange()
+
+        val newTun = try {
+            tunProvider.establish(newApps, activeConfig)
+        } catch (e: Exception) {
+            stopLocked(preserveFailure = false)
+            val msg = e.message ?: "Failed to rebuild TUN interface for updated applications"
+            publishFailure("VpnInterface", msg)
+            return@withLock Result.failure(e)
+        }
+        currentTun = newTun
+        tunClosed.set(false)
+        activeApps = newApps.toSet()
+
+        tunnelStartAttempted = true
+        val started = runCatching {
+            tunnelEngine.start(
+                TunnelConfig(
+                    tunFd = newTun.fd,
+                    mtu = 1500,
+                    socks5Address = "127.0.0.1",
+                    socks5Port = proxy.port,
+                    configFilePath = configFilePath
+                )
+            )
+        }.getOrElse { false }
+
+        if (startupVerifyDelayMs > 0L) {
+            delay(startupVerifyDelayMs)
+        }
+
+        if (!started || !tunnelEngine.isRunning()) {
+            rollbackPartialStartup(
+                "HevSocks5Tunnel",
+                "HevSocks5Tunnel failed to restart after target app reconfiguration."
+            )
+            return@withLock Result.failure(IllegalStateException("HevSocks5Tunnel failed to restart after app reconfiguration."))
+        }
+
+        publishSnapshot(
+            _diagnostics.value.copy(
+                vpnState = VpnLifecycleState.RUNNING,
+                tunnelState = ComponentHealthState.RUNNING,
+                proxyState = ComponentHealthState.RUNNING,
+                lastError = null,
+                lastErrorComponent = null
+            )
+        )
+        return@withLock Result.success(Unit)
+    }
+
+    suspend fun onUnderlyingNetworkChanged(hasValidatedNetwork: Boolean) {
+        lifecycleMutex.withLock {
+            if (_diagnostics.value.vpnState == VpnLifecycleState.RUNNING) {
+                // Closing stale outbound sockets forces clean re-creation bound to the active physical network.
+                if (hasValidatedNetwork) {
+                    proxyServer?.resetActiveSessionsOnNetworkChange()
+                }
+            }
+        }
+    }
+
+    /**
+     * Exposed so tests or internal monitors can trigger an immediate health evaluation cycle.
+     */
+    suspend fun checkHealthNow() {
+        lifecycleMutex.withLock {
+            evaluateHealthLocked()
+        }
+    }
+
+    private suspend fun evaluateHealthLocked() {
+        val current = _diagnostics.value
+        if (current.vpnState != VpnLifecycleState.RUNNING) return
+
+        val tunnelOk = runCatching { tunnelEngine.isRunning() }.getOrElse { false }
+        val proxyOk = proxyServer?.isRunning == true
+
+        if (!tunnelOk) {
+            val msg = "HevSocks5Tunnel exited unexpectedly. Stopped VPN cleanly to restore normal networking."
+            stopLocked(preserveFailure = true)
+            publishFailure("HevSocks5Tunnel", msg)
+            return
+        }
+
+        if (!proxyOk) {
+            val msg = "Local SOCKS5 proxy stopped unexpectedly. Stopped VPN cleanly to restore normal networking."
+            stopLocked(preserveFailure = true)
+            publishFailure("LocalSocks5Proxy", msg)
+            return
+        }
+
+        val imp = impairmentController?.snapshotMetrics()
+        val tunStats = runCatching { tunnelEngine.getStats() }.getOrElse { TunnelStats() }
+        val proxy = proxyServer
+
+        publishSnapshot(
+            current.copy(
+                vpnState = VpnLifecycleState.RUNNING,
+                tunnelState = ComponentHealthState.RUNNING,
+                proxyState = ComponentHealthState.RUNNING,
+                proxyPort = proxy?.port ?: 0,
+                activeTcpSessions = proxy?.activeTcpSessions ?: 0,
+                activeUdpSessions = proxy?.activeUdpSessions ?: 0,
+                forwardedUdpDatagrams = imp?.forwardedUdpDatagrams ?: 0L,
+                droppedUdpDatagrams = imp?.droppedUdpDatagrams ?: 0L,
+                forwardedTcpBytes = imp?.forwardedTcpBytes ?: 0L,
+                delayedTcpWrites = imp?.delayedTcpWrites ?: 0L,
+                throttledTcpEvents = imp?.throttledTcpEvents ?: 0L,
+                tunnelTxPackets = tunStats.txPackets,
+                tunnelTxBytes = tunStats.txBytes,
+                tunnelRxPackets = tunStats.rxPackets,
+                tunnelRxBytes = tunStats.rxBytes
+            )
+        )
+    }
+
+    private fun handleComponentError(component: String, message: String) {
+        val current = _diagnostics.value
+        if (component == "SocketProtector") {
+            scope.launch {
+                lifecycleMutex.withLock {
+                    if (_diagnostics.value.vpnState == VpnLifecycleState.RUNNING ||
+                        _diagnostics.value.vpnState == VpnLifecycleState.STARTING
+                    ) {
+                        stopLocked(preserveFailure = true)
+                        publishFailure(component, message)
+                    }
+                }
+            }
+        } else {
+            publishSnapshot(
+                current.copy(
+                    lastError = message,
+                    lastErrorComponent = component
+                )
+            )
+        }
+    }
+
+    private fun rollbackPartialStartup(component: String, message: String) {
+        stopLocked(preserveFailure = true)
+        publishFailure(component, message)
+    }
+
+    private fun stopLocked(preserveFailure: Boolean) {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        timeoutJob?.cancel()
+        timeoutJob = null
+
+        val prior = _diagnostics.value
+        publishSnapshot(
+            prior.copy(
+                vpnState = VpnLifecycleState.STOPPING,
+                proxyPort = 0
+            )
+        )
+
+        // 1. Stop HevSocks5Tunnel first (joins its worker thread so TUN FD is no longer used)
+        if (tunnelStartAttempted || tunnelEngine.isRunning()) {
+            runCatching { tunnelEngine.stop() }
+            tunnelStartAttempted = false
+        }
+
+        // 2. Stop local loopback SOCKS5 proxy and clear all active sessions
+        runCatching { proxyServer?.stop() }
+        proxyServer = null
+        impairmentController = null
+
+        // 3. Close TUN FD exactly once after Hev has joined
+        closeCurrentTunOnce()
+
+        if (!preserveFailure) {
+            publishSnapshot(
+                DiagnosticsSnapshot(
+                    vpnState = VpnLifecycleState.STOPPED,
+                    tunnelState = ComponentHealthState.STOPPED,
+                    proxyState = ComponentHealthState.STOPPED
+                )
+            )
+        }
+    }
+
+    private fun closeCurrentTunOnce() {
+        if (tunClosed.compareAndSet(false, true)) {
+            runCatching { currentTun?.close() }
+        }
+        currentTun = null
+    }
+
+    private fun startWatchdogLocked() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(watchdogIntervalMs)
+                lifecycleMutex.withLock {
+                    if (_diagnostics.value.vpnState == VpnLifecycleState.RUNNING) {
+                        evaluateHealthLocked()
+                    } else {
+                        cancel()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun scheduleTimeoutLocked(timeoutSeconds: Int) {
+        timeoutJob?.cancel()
+        if (timeoutSeconds <= 0) return
+        timeoutJob = scope.launch {
+            delay(timeoutSeconds * 1000L)
+            lifecycleMutex.withLock {
+                if (_diagnostics.value.vpnState == VpnLifecycleState.RUNNING) {
+                    stopLocked(preserveFailure = false)
+                }
+            }
+        }
+    }
+
+    private fun publishFailure(component: String, message: String) {
+        publishSnapshot(
+            DiagnosticsSnapshot(
+                vpnState = VpnLifecycleState.FAILED,
+                tunnelState = if (component == "HevSocks5Tunnel") ComponentHealthState.FAILED else ComponentHealthState.STOPPED,
+                proxyState = if (component == "LocalSocks5Proxy") ComponentHealthState.FAILED else ComponentHealthState.STOPPED,
+                lastError = message,
+                lastErrorComponent = component
+            )
+        )
+    }
+
+    private fun publishSnapshot(snapshot: DiagnosticsSnapshot) {
+        _diagnostics.value = snapshot
+        onStateChanged(snapshot)
+    }
+}
+`
+  },
+  {
+    path: "app/src/main/java/com/callglitch/app/vpn/TunnelEngine.kt",
+    language: "kotlin",
+    description: "TunnelEngine abstraction and HevTunnelEngine wrapping pinned heiher/hev-socks5-tunnel v2.20.0",
+    content: `package com.callglitch.app.vpn
+
+import hev.htproxy.TProxyService
+import java.io.File
+
+data class TunnelConfig(
+    val tunFd: Int,
+    val mtu: Int = 1500,
+    val socks5Address: String = "127.0.0.1",
+    val socks5Port: Int,
+    val configFilePath: String
+)
+
+data class TunnelStats(
+    val txPackets: Long = 0L,
+    val txBytes: Long = 0L,
+    val rxPackets: Long = 0L,
+    val rxBytes: Long = 0L
+)
+
+/**
+ * Adapter interface wrapping the native HevSocks5Tunnel engine so VPN lifecycle
+ * management and failure recovery can be thoroughly unit-tested on the JVM.
+ */
+interface TunnelEngine {
+    fun start(config: TunnelConfig): Boolean
+    fun stop(): Boolean
+    fun isRunning(): Boolean
+    fun getStats(): TunnelStats
+}
+
+/**
+ * Concrete TunnelEngine backed by pinned heiher/hev-socks5-tunnel v2.20.0 (hev.htproxy.TProxyService).
+ *
+ * FD ownership contract verified in upstream hev-socks5-tunnel.c (tunnel_init / tunnel_fini):
+ * When given an external TUN FD, Hev never closes it. CallGlitchVpnService must keep the
+ * ParcelFileDescriptor open while Hev is running, call stop() (which joins the worker thread),
+ * and close the ParcelFileDescriptor once afterward.
+ */
+class HevTunnelEngine : TunnelEngine {
+
+    override fun start(config: TunnelConfig): Boolean {
+        val confFile = File(config.configFilePath)
+        confFile.parentFile?.mkdirs()
+        confFile.writeText(buildYamlConfig(config), Charsets.UTF_8)
+        return TProxyService.TProxyStartService(confFile.absolutePath, config.tunFd)
+    }
+
+    override fun stop(): Boolean {
+        return TProxyService.TProxyStopService()
+    }
+
+    override fun isRunning(): Boolean {
+        return TProxyService.TProxyIsRunning()
+    }
+
+    override fun getStats(): TunnelStats {
+        val raw = runCatching { TProxyService.TProxyGetStats() }.getOrNull() ?: return TunnelStats()
+        if (raw.size < 4) return TunnelStats()
+        return TunnelStats(
+            txPackets = raw[0],
+            txBytes = raw[1],
+            rxPackets = raw[2],
+            rxBytes = raw[3]
+        )
+    }
+
+    companion object {
+        fun buildYamlConfig(config: TunnelConfig): String {
+            return buildString {
+                appendLine("misc:")
+                appendLine("  task-stack-size: 86016")
+                appendLine("  udp-recv-buffer-size: 524288")
+                appendLine("  udp-copy-buffer-nums: 10")
+                appendLine("  connect-timeout: 10000")
+                appendLine("  tcp-read-write-timeout: 300000")
+                appendLine("  udp-read-write-timeout: 60000")
+                appendLine("  log-level: warn")
+                appendLine("tunnel:")
+                appendLine("  mtu: \${config.mtu}")
+                appendLine("  icmp: 'reply'")
+                appendLine("socks5:")
+                appendLine("  port: \${config.socks5Port}")
+                appendLine("  address: '\${config.socks5Address}'")
+                appendLine("  udp: 'udp'")
+                appendLine("  pipeline: false")
+            }
+        }
+    }
+}
+`
+  },
+  {
+    path: "app/src/main/java/com/callglitch/app/vpn/LocalSocks5ProxyServer.kt",
+    language: "kotlin",
+    description: "Loopback-only RFC 1928 SOCKS5 proxy (CONNECT + UDP ASSOCIATE, IPv4/IPv6/domain)",
+    content: `package com.callglitch.app.vpn
+
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import java.io.FileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.EOFException
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import java.nio.ByteBuffer
+import java.util.PriorityQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.random.Random
 
 /**
- * Rootless, per-app dual-stack (IPv4 + IPv6) user-space packet forwarding and impairment engine.
+ * Local-only loopback SOCKS5 proxy (RFC 1928) executing inside Call Glitch.
  *
- * - Captures and impairs both IPv4 and IPv6 traffic so dual-stack VoIP/video calls
- *   (WhatsApp, Telegram, Google Meet, Zoom, Messenger, Chamet) cannot bypass the VPN.
- * - Uses Endpoint-Independent UDP NAT (keyed by local ip:port) so WebRTC ICE/STUN/TURN
- *   hole-punching and incoming media streams stay bound cleanly.
- * - Uses an ordered, MTU-chunked (1380B) user-space TCP proxy with RFC-compliant checksums
- *   so signaling, DNS, and TLS never break or silently blackhole.
- * - Runs socket I/O on a dedicated cached thread pool so open sockets never starve
- *   the TUN reader or delay-queue dispatcher.
+ * - Strictly bound to 127.0.0.1 (never exposed on Wi-Fi, cellular, or LAN interfaces).
+ * - Supports NO AUTH (0x00), CONNECT (0x01), and UDP ASSOCIATE (0x03).
+ * - Supports IPv4 (0x01), Domain Name (0x03), and IPv6 (0x04) target addressing.
+ * - Enforces SocketProtector.protect() on every outbound TCP/UDP socket before connect/send.
  */
-class PacketForwardingEngine(
-    private val vpnService: VpnService,
-    private val tunFd: FileDescriptor,
-    @Volatile private var config: GlitchConfig,
-    private val onStatsUpdate: (forwarded: Long, dropped: Long) -> Unit
+class LocalSocks5ProxyServer(
+    private val impairmentController: ImpairmentController,
+    private val socketProtector: SocketProtector,
+    private val requestedPort: Int = 0,
+    private val connectTimeoutMs: Int = 10_000,
+    private val tcpBufferQueueCapacity: Int = 32,
+    private val maxUdpQueuePerDirection: Int = 512,
+    private val udpIdleTimeoutMs: Long = 120_000L,
+    private val onError: (component: String, message: String) -> Unit = { _, _ -> }
 ) {
-    private val isRunning = AtomicBoolean(false)
-    private val forwardedCount = AtomicLong(0)
-    private val droppedCount = AtomicLong(0)
+    private val running = AtomicBoolean(false)
+    private val sessionSeq = AtomicLong(0)
+    private val activeTcpCount = AtomicInteger(0)
+    private val activeUdpCount = AtomicInteger(0)
 
-    private val socketExecutor = Executors.newCachedThreadPool()
-    private val socketDispatcher = socketExecutor.asCoroutineDispatcher()
-    private val engineScope = CoroutineScope(socketDispatcher + SupervisorJob())
+    private var serverSocket: ServerSocket? = null
+    private var executor = Executors.newCachedThreadPool()
+    private var proxyDispatcher = executor.asCoroutineDispatcher()
+    private var proxyScope = CoroutineScope(proxyDispatcher + SupervisorJob())
+    private var acceptJob: Job? = null
 
-    // Endpoint-independent UDP NAT table: keyed by (v4/v6:srcIp:srcPort)
-    private val udpSessions = ConcurrentHashMap<String, UdpSession>()
+    private val tcpSessions = ConcurrentHashMap<Long, TcpRelaySession>()
+    private val udpSessions = ConcurrentHashMap<Long, UdpRelaySession>()
 
-    // TCP transparent proxy table: keyed by (v4/v6:srcIp:srcPort->dstIp:dstPort)
-    private val tcpSessions = ConcurrentHashMap<String, TcpSession>()
+    @Volatile
+    var port: Int = 0
+        private set
 
-    // Bounded packet delay queue for outgoing & incoming UDP impairment
-    private val maxQueueCapacity = 8000
-    private val delayQueue = PriorityBlockingQueue<DelayedPacket>(1024, compareBy { it.scheduledReleaseTime })
+    val isRunning: Boolean
+        get() = running.get() && serverSocket?.isClosed == false && port > 0
 
-    // TUN streams
-    private val tunIn = FileInputStream(tunFd)
-    private val tunOut = FileOutputStream(tunFd)
+    val activeTcpSessions: Int
+        get() = activeTcpCount.get()
 
-    companion object {
-        private const val TAG = "PacketForwardingEngine"
-        private const val BUFFER_SIZE = 32767
-        private const val MAX_TCP_PAYLOAD = 1380
-    }
+    val activeUdpSessions: Int
+        get() = activeUdpCount.get()
 
-    fun start() {
-        if (!isRunning.compareAndSet(false, true)) return
+    fun start(): Int {
+        if (running.get()) {
+            val existingPort = port
+            if (existingPort > 0 && serverSocket?.isClosed == false) return existingPort
+        }
 
-        // 1. TUN Packet Reader (Outgoing traffic from allowed apps)
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            while (isRunning.get()) {
+        if (executor.isShutdown) {
+            executor = Executors.newCachedThreadPool()
+            proxyDispatcher = executor.asCoroutineDispatcher()
+        }
+        proxyScope = CoroutineScope(proxyDispatcher + SupervisorJob())
+
+        val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+        val boundSocket = ServerSocket().apply {
+            reuseAddress = true
+            bind(InetSocketAddress(loopback, requestedPort), 128)
+        }
+        serverSocket = boundSocket
+        port = boundSocket.localPort
+        running.set(true)
+
+        acceptJob = proxyScope.launch {
+            while (running.get() && !boundSocket.isClosed) {
                 try {
-                    val length = tunIn.read(buffer)
-                    if (length > 0) {
-                        val packetData = buffer.copyOf(length)
-                        handleOutgoingTunPacket(packetData)
+                    val client = boundSocket.accept()
+                    val sessionId = sessionSeq.incrementAndGet()
+                    proxyScope.launch {
+                        handleClientConnection(sessionId, client)
                     }
+                } catch (e: SocketException) {
+                    if (running.get()) {
+                        onError("LocalSocks5Proxy", "Accept loop socket error: \${e.message}")
+                    }
+                    break
                 } catch (e: Exception) {
-                    if (isRunning.get()) {
-                        Log.e(TAG, "Error reading from TUN: \${e.message}")
+                    if (running.get()) {
+                        onError("LocalSocks5Proxy", "Accept loop failure: \${e.message}")
                     }
                     break
                 }
             }
         }
-
-        // 2. Delay Queue Dispatcher (Releases delayed packets accurately on schedule)
-        engineScope.launch {
-            while (isRunning.get()) {
-                try {
-                    var head = delayQueue.peek()
-                    val now = System.currentTimeMillis()
-                    if (head != null && head.scheduledReleaseTime <= now) {
-                        while (head != null && head.scheduledReleaseTime <= System.currentTimeMillis() && isRunning.get()) {
-                            val packet = delayQueue.poll() ?: break
-                            dispatchDelayedPacket(packet)
-                            head = delayQueue.peek()
-                        }
-                    } else if (head != null) {
-                        val waitTime = (head.scheduledReleaseTime - now).coerceIn(1L, 5L)
-                        delay(waitTime)
-                    } else {
-                        delay(2L)
-                    }
-                } catch (e: Exception) {
-                    delay(5L)
-                }
-            }
-        }
-
-        // 3. Periodic Session Housekeeping (Every 30s)
-        engineScope.launch {
-            while (isRunning.get()) {
-                delay(30000L)
-                cleanStaleSessions()
-            }
-        }
+        return port
     }
 
-    fun updateConfig(newConfig: GlitchConfig) {
-        this.config = newConfig
-        Log.i(
-            TAG,
-            "Impairment config updated: \${newConfig.profileType.displayName} " +
-                "(latency=\${newConfig.baseLatencyMs}ms, jitter=\${newConfig.randomJitterMs}ms, " +
-                "loss=\${newConfig.packetLossPercent}%, burst=\${newConfig.burstInterruptionEnabled}, affectTcp=\${newConfig.affectTcp})"
-        )
-    }
-
-    fun onUnderlyingNetworkChanged(network: Network) {
-        udpSessions.values.forEach { session ->
-            try { vpnService.protect(session.socket) } catch (ignored: Exception) {}
-        }
-        tcpSessions.values.forEach { session ->
-            try { vpnService.protect(session.socket) } catch (ignored: Exception) {}
-        }
-    }
-
-    // =========================================================================
-    // OUTGOING PACKET PROCESSING (From App through TUN)
-    // =========================================================================
-
-    private fun handleOutgoingTunPacket(packet: ByteArray) {
-        if (packet.isEmpty()) return
-        val version = (packet[0].toInt() shr 4) and 0x0F
-
-        when (version) {
-            4 -> handleIpv4Packet(packet)
-            6 -> handleIpv6Packet(packet)
-        }
-    }
-
-    private fun handleIpv4Packet(packet: ByteArray) {
-        if (packet.size < 20) return
-        val ipHeaderLen = (packet[0].toInt() and 0x0F) * 4
-        if (ipHeaderLen < 20 || packet.size < ipHeaderLen) return
-
-        val declaredTotalLen = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
-        val packetLen = declaredTotalLen.coerceIn(ipHeaderLen, packet.size)
-        val protocol = packet[9].toInt() and 0xFF
-
-        val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
-        val dstIp = InetAddress.getByAddress(packet.copyOfRange(16, 20))
-
-        when (protocol) {
-            17 -> handleOutgoingUdp(packet, packetLen, ipHeaderLen, srcIp, dstIp, isIpv6 = false)
-            6 -> handleOutgoingTcp(packet, packetLen, ipHeaderLen, srcIp, dstIp, isIpv6 = false)
-            1 -> handleOutgoingIcmpV4(packet, packetLen, ipHeaderLen, srcIp, dstIp)
-            else -> reportForwarded()
-        }
-    }
-
-    private fun handleIpv6Packet(packet: ByteArray) {
-        if (packet.size < 40) return
-        val payloadLen = ((packet[4].toInt() and 0xFF) shl 8) or (packet[5].toInt() and 0xFF)
-        val packetLen = (40 + payloadLen).coerceIn(40, packet.size)
-
-        val srcIp = InetAddress.getByAddress(packet.copyOfRange(8, 24))
-        val dstIp = InetAddress.getByAddress(packet.copyOfRange(24, 40))
-
-        var nextHeader = packet[6].toInt() and 0xFF
-        var offset = 40
-
-        // Walk standard IPv6 extension headers if present
-        while (offset < packetLen) {
-            when (nextHeader) {
-                0, 43, 60 -> { // Hop-by-Hop, Routing, Destination Options
-                    if (offset + 2 > packetLen) return
-                    nextHeader = packet[offset].toInt() and 0xFF
-                    val extLen = ((packet[offset + 1].toInt() and 0xFF) + 1) * 8
-                    offset += extLen
-                }
-                44 -> { // Fragment Header (8 bytes)
-                    if (offset + 8 > packetLen) return
-                    nextHeader = packet[offset].toInt() and 0xFF
-                    offset += 8
-                }
-                else -> break
-            }
-        }
-
-        if (offset > packetLen) return
-
-        when (nextHeader) {
-            17 -> handleOutgoingUdp(packet, packetLen, offset, srcIp, dstIp, isIpv6 = true)
-            6 -> handleOutgoingTcp(packet, packetLen, offset, srcIp, dstIp, isIpv6 = true)
-            58 -> handleOutgoingIcmpV6(packet, packetLen, offset, srcIp, dstIp)
-            else -> reportForwarded()
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // UDP PROCESSING (VoIP audio/video RTP, STUN/TURN, QUIC, DNS)
-    // -------------------------------------------------------------------------
-
-    private fun handleOutgoingUdp(
-        packet: ByteArray,
-        packetLen: Int,
-        transportOffset: Int,
-        srcIp: InetAddress,
-        dstIp: InetAddress,
-        isIpv6: Boolean
-    ) {
-        if (packetLen < transportOffset + 8) return
-        if (dstIp.isMulticastAddress || dstIp.isLinkLocalAddress) return
-
-        val srcPort = ((packet[transportOffset].toInt() and 0xFF) shl 8) or (packet[transportOffset + 1].toInt() and 0xFF)
-        val dstPort = ((packet[transportOffset + 2].toInt() and 0xFF) shl 8) or (packet[transportOffset + 3].toInt() and 0xFF)
-        val udpLen = ((packet[transportOffset + 4].toInt() and 0xFF) shl 8) or (packet[transportOffset + 5].toInt() and 0xFF)
-
-        val endPayload = (transportOffset + udpLen).coerceAtMost(packetLen)
-        if (transportOffset + 8 > endPayload) return
-        val payload = packet.copyOfRange(transportOffset + 8, endPayload)
-
-        val isDns = dstPort == 53 || srcPort == 53
-        if (isDns) {
-            sendUdpToNetwork(srcIp, srcPort, dstIp, dstPort, payload, isIpv6, packet.copyOf(packetLen))
-            return
-        }
-
-        val currentConfig = config
-        val shouldImpair = (currentConfig.direction == ImpairmentDirection.BOTH || currentConfig.direction == ImpairmentDirection.OUTGOING)
-
-        if (shouldImpair) {
-            if (shouldDropPacket(currentConfig)) {
-                reportDropped()
-                return
-            }
-
-            val delayMs = calculateDelay(currentConfig)
-            if (delayMs > 0) {
-                if (delayQueue.size < maxQueueCapacity) {
-                    delayQueue.offer(
-                        DelayedPacket(
-                            data = payload,
-                            scheduledReleaseTime = System.currentTimeMillis() + delayMs,
-                            isIncoming = false,
-                            srcIp = srcIp,
-                            srcPort = srcPort,
-                            dstIp = dstIp,
-                            dstPort = dstPort,
-                            isIpv6 = isIpv6,
-                            rawPacketForError = if (isIpv6) packet.copyOf(packetLen) else null
-                        )
-                    )
-                } else {
-                    // Tail-drop when congested (never bypass delay queue at 0ms)
-                    reportDropped()
-                }
-                return
-            }
-        }
-
-        sendUdpToNetwork(srcIp, srcPort, dstIp, dstPort, payload, isIpv6, if (isIpv6) packet.copyOf(packetLen) else null)
-    }
-
-    private fun sendUdpToNetwork(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        payload: ByteArray,
-        isIpv6: Boolean,
-        rawPacketForError: ByteArray?
-    ) {
-        val sessionKey = "\${if (isIpv6) "v6" else "v4"}:\${srcIp.hostAddress}:$srcPort"
-        try {
-            val session = udpSessions.computeIfAbsent(sessionKey) {
-                createUdpSession(sessionKey, srcIp, srcPort, isIpv6)
-            }
-            session.lastActivity = System.currentTimeMillis()
-
-            val datagram = DatagramPacket(payload, payload.size, dstIp, dstPort)
-            session.socket.send(datagram)
-            reportForwarded()
-        } catch (e: Exception) {
-            Log.d(TAG, "UDP send error ($dstIp:$dstPort): \${e.message}")
-            if (isIpv6 && rawPacketForError != null) {
-                // Immediately notify app IPv6 is unreachable so Happy Eyeballs/ICE falls back to IPv4
-                val unreach = synthesizeIcmpV6Unreachable(dstIp, srcIp, rawPacketForError)
-                writeToTun(unreach)
-            }
-        }
-    }
-
-    private fun createUdpSession(
-        sessionKey: String,
-        srcIp: InetAddress,
-        srcPort: Int,
-        isIpv6: Boolean
-    ): UdpSession {
-        val socket = DatagramSocket()
-        vpnService.protect(socket)
-
-        val session = UdpSession(sessionKey, socket, srcIp, srcPort, isIpv6, System.currentTimeMillis())
-
-        engineScope.launch {
-            val buffer = ByteArray(BUFFER_SIZE)
-            try {
-                while (isRunning.get() && !socket.isClosed) {
-                    val incoming = DatagramPacket(buffer, buffer.size)
-                    socket.receive(incoming)
-                    session.lastActivity = System.currentTimeMillis()
-
-                    val remoteIp = incoming.address ?: continue
-                    val remotePort = incoming.port
-
-                    // Ensure address family matches the local TUN interface address
-                    if (!session.isIpv6 && remoteIp !is Inet4Address) continue
-                    if (session.isIpv6 && remoteIp !is Inet6Address) continue
-
-                    val payload = incoming.data.copyOf(incoming.length)
-                    handleIncomingUdpPacket(session, remoteIp, remotePort, payload)
-                }
-            } catch (ignored: Exception) {
-            } finally {
-                udpSessions.remove(sessionKey, session)
-                try { socket.close() } catch (ignored: Exception) {}
-            }
-        }
-        return session
-    }
-
-    private fun handleIncomingUdpPacket(
-        session: UdpSession,
-        remoteIp: InetAddress,
-        remotePort: Int,
-        payload: ByteArray
-    ) {
-        val synth = if (session.isIpv6) {
-            synthesizeIpv6UdpPacket(remoteIp, remotePort, session.srcIp, session.srcPort, payload)
-        } else {
-            synthesizeIpv4UdpPacket(remoteIp, remotePort, session.srcIp, session.srcPort, payload)
-        }
-
-        val isDns = remotePort == 53 || session.srcPort == 53
-        if (isDns) {
-            writeToTun(synth)
-            return
-        }
-
-        val currentConfig = config
-        val shouldImpair = (currentConfig.direction == ImpairmentDirection.BOTH || currentConfig.direction == ImpairmentDirection.INCOMING)
-
-        if (shouldImpair) {
-            if (shouldDropPacket(currentConfig)) {
-                reportDropped()
-                return
-            }
-
-            val delayMs = calculateDelay(currentConfig)
-            if (delayMs > 0) {
-                if (delayQueue.size < maxQueueCapacity) {
-                    delayQueue.offer(
-                        DelayedPacket(
-                            data = synth,
-                            scheduledReleaseTime = System.currentTimeMillis() + delayMs,
-                            isIncoming = true,
-                            srcIp = remoteIp,
-                            srcPort = remotePort,
-                            dstIp = session.srcIp,
-                            dstPort = session.srcPort,
-                            isIpv6 = session.isIpv6,
-                            rawPacketForError = null
-                        )
-                    )
-                } else {
-                    reportDropped()
-                }
-                return
-            }
-        }
-
-        writeToTun(synth)
-    }
-
-    // -------------------------------------------------------------------------
-    // TCP PROCESSING (Call signaling, TLS, HTTPS, TURN-over-TCP)
-    // -------------------------------------------------------------------------
-
-    private fun handleOutgoingTcp(
-        packet: ByteArray,
-        packetLen: Int,
-        transportOffset: Int,
-        srcIp: InetAddress,
-        dstIp: InetAddress,
-        isIpv6: Boolean
-    ) {
-        if (packetLen < transportOffset + 20) return
-
-        val srcPort = ((packet[transportOffset].toInt() and 0xFF) shl 8) or (packet[transportOffset + 1].toInt() and 0xFF)
-        val dstPort = ((packet[transportOffset + 2].toInt() and 0xFF) shl 8) or (packet[transportOffset + 3].toInt() and 0xFF)
-
-        val clientSeq = (((packet[transportOffset + 4].toLong() and 0xFF) shl 24) or
-                ((packet[transportOffset + 5].toLong() and 0xFF) shl 16) or
-                ((packet[transportOffset + 6].toLong() and 0xFF) shl 8) or
-                (packet[transportOffset + 7].toLong() and 0xFF))
-
-        val dataOffset = ((packet[transportOffset + 12].toInt() shr 4) and 0x0F) * 4
-        if (dataOffset < 20 || packetLen < transportOffset + dataOffset) return
-
-        val flags = packet[transportOffset + 13].toInt() and 0xFF
-        val isSyn = (flags and 0x02) != 0
-        val isAck = (flags and 0x10) != 0
-        val isFin = (flags and 0x01) != 0
-        val isRst = (flags and 0x04) != 0
-
-        val payloadOffset = transportOffset + dataOffset
-        val payloadLen = (packetLen - payloadOffset).coerceAtLeast(0)
-
-        val sessionKey = "\${if (isIpv6) "v6" else "v4"}:\${srcIp.hostAddress}:$srcPort->\${dstIp.hostAddress}:$dstPort"
-
-        if (isRst) {
-            tcpSessions.remove(sessionKey)?.close()
-            return
-        }
-
-        if (isSyn && !isAck) {
-            tcpSessions.remove(sessionKey)?.close()
-
-            val initialServerSeq = (Random.nextLong(0x0FFFFFFF) + 1000L) and 0xFFFFFFFFL
-            val session = TcpSession(
-                sessionKey = sessionKey,
-                isIpv6 = isIpv6,
-                clientIp = srcIp,
-                clientPort = srcPort,
-                serverIp = dstIp,
-                serverPort = dstPort,
-                clientNextAck = (clientSeq + 1L) and 0xFFFFFFFFL,
-                serverSeq = initialServerSeq
-            )
-            tcpSessions[sessionKey] = session
-
-            val synAck = synthesizeTcpPacket(
-                isIpv6 = isIpv6,
-                srcIp = dstIp,
-                srcPort = dstPort,
-                dstIp = srcIp,
-                dstPort = srcPort,
-                seq = initialServerSeq,
-                ack = session.clientNextAck,
-                flags = 0x12 // SYN | ACK
-            )
-            session.serverSeq = (session.serverSeq + 1L) and 0xFFFFFFFFL
-            writeToTun(synAck)
-
-            session.start()
-            return
-        }
-
-        val session = tcpSessions[sessionKey]
-        if (session == null) {
-            if (!isRst) {
-                val rst = synthesizeTcpPacket(
-                    isIpv6 = isIpv6,
-                    srcIp = dstIp,
-                    srcPort = dstPort,
-                    dstIp = srcIp,
-                    dstPort = srcPort,
-                    seq = 0L,
-                    ack = (clientSeq + payloadLen + (if (isSyn || isFin) 1L else 0L)) and 0xFFFFFFFFL,
-                    flags = 0x14 // RST | ACK
-                )
-                writeToTun(rst)
-            }
-            return
-        }
-
-        session.lastActivity = System.currentTimeMillis()
-
-        if (payloadLen > 0) {
-            // Sequence-number deduplication (32-bit wrap-safe)
-            val seqDiff = (clientSeq - session.clientNextAck).toInt()
-            if (seqDiff == 0) {
-                val payload = packet.copyOfRange(payloadOffset, packetLen)
-                session.clientNextAck = (session.clientNextAck + payloadLen) and 0xFFFFFFFFL
-                sendTcpAck(session)
-                session.enqueueOutbound(payload)
-            } else if (seqDiff < 0) {
-                val overlap = -seqDiff
-                if (overlap < payloadLen) {
-                    val newSlice = packet.copyOfRange(payloadOffset + overlap, packetLen)
-                    session.clientNextAck = (session.clientNextAck + newSlice.size) and 0xFFFFFFFFL
-                    sendTcpAck(session)
-                    session.enqueueOutbound(newSlice)
-                } else {
-                    // Pure retransmission: re-ACK without duplicating stream bytes
-                    sendTcpAck(session)
-                }
-            } else {
-                // Future out-of-order segment: re-ACK expected sequence so client retransmits cleanly
-                sendTcpAck(session)
-            }
-        }
-
-        if (isFin) {
-            session.clientNextAck = (session.clientNextAck + 1L) and 0xFFFFFFFFL
-            sendTcpAck(session)
-            session.close()
-            tcpSessions.remove(sessionKey, session)
-        }
-    }
-
-    private fun sendTcpAck(session: TcpSession) {
-        val ack = synthesizeTcpPacket(
-            isIpv6 = session.isIpv6,
-            srcIp = session.serverIp,
-            srcPort = session.serverPort,
-            dstIp = session.clientIp,
-            dstPort = session.clientPort,
-            seq = session.serverSeq,
-            ack = session.clientNextAck,
-            flags = 0x10 // ACK
-        )
-        writeToTun(ack)
-    }
-
-    // -------------------------------------------------------------------------
-    // ICMPv4 / ICMPv6 HANDLERS
-    // -------------------------------------------------------------------------
-
-    private fun handleOutgoingIcmpV4(
-        packet: ByteArray,
-        packetLen: Int,
-        ipHeaderLen: Int,
-        srcIp: InetAddress,
-        dstIp: InetAddress
-    ) {
-        if (packetLen < ipHeaderLen + 8) return
-        val type = packet[ipHeaderLen].toInt() and 0xFF
-        if (type == 8) { // Echo Request
-            val echoReply = packet.copyOf(packetLen)
-            System.arraycopy(dstIp.address, 0, echoReply, 12, 4)
-            System.arraycopy(srcIp.address, 0, echoReply, 16, 4)
-            echoReply[ipHeaderLen] = 0.toByte()
-            echoReply[ipHeaderLen + 2] = 0
-            echoReply[ipHeaderLen + 3] = 0
-            val icmpCsum = ChecksumCalculator.computeChecksum(echoReply, ipHeaderLen, packetLen - ipHeaderLen)
-            echoReply[ipHeaderLen + 2] = ((icmpCsum.toInt() shr 8) and 0xFF).toByte()
-            echoReply[ipHeaderLen + 3] = (icmpCsum.toInt() and 0xFF).toByte()
-
-            echoReply[10] = 0
-            echoReply[11] = 0
-            val ipCsum = ChecksumCalculator.computeIpChecksum(echoReply, 0, ipHeaderLen)
-            echoReply[10] = ((ipCsum.toInt() shr 8) and 0xFF).toByte()
-            echoReply[11] = (ipCsum.toInt() and 0xFF).toByte()
-
-            writeToTun(echoReply)
-        }
-    }
-
-    private fun handleOutgoingIcmpV6(
-        packet: ByteArray,
-        packetLen: Int,
-        transportOffset: Int,
-        srcIp: InetAddress,
-        dstIp: InetAddress
-    ) {
-        if (packetLen < transportOffset + 8) return
-        val type = packet[transportOffset].toInt() and 0xFF
-        if (type == 128) { // ICMPv6 Echo Request
-            val icmpLen = packetLen - transportOffset
-            val reply = ByteArray(40 + icmpLen)
-            val buf = ByteBuffer.wrap(reply)
-            buf.put(0x60.toByte())
-            buf.put(0x00.toByte())
-            buf.putShort(0)
-            buf.putShort(icmpLen.toShort())
-            buf.put(58.toByte()) // Next Header: ICMPv6
-            buf.put(64.toByte()) // Hop Limit
-            buf.put(dstIp.address)
-            buf.put(srcIp.address)
-            System.arraycopy(packet, transportOffset, reply, 40, icmpLen)
-            reply[40] = 129.toByte() // Echo Reply
-            reply[42] = 0
-            reply[43] = 0
-            val csum = ChecksumCalculator.computeIpv6TransportChecksum(
-                dstIp.address, srcIp.address, 58, reply, 40, icmpLen, 2
-            )
-            reply[42] = ((csum.toInt() shr 8) and 0xFF).toByte()
-            reply[43] = (csum.toInt() and 0xFF).toByte()
-            writeToTun(reply)
-        }
-    }
-
-    private fun synthesizeIcmpV6Unreachable(
-        srcIp: InetAddress,
-        dstIp: InetAddress,
-        originalPacket: ByteArray
-    ): ByteArray {
-        val quotedLen = originalPacket.size.coerceAtMost(1232)
-        val icmpLen = 8 + quotedLen
-        val reply = ByteArray(40 + icmpLen)
-        val buf = ByteBuffer.wrap(reply)
-        buf.put(0x60.toByte())
-        buf.put(0x00.toByte())
-        buf.putShort(0)
-        buf.putShort(icmpLen.toShort())
-        buf.put(58.toByte()) // ICMPv6
-        buf.put(64.toByte())
-        buf.put(srcIp.address)
-        buf.put(dstIp.address)
-
-        reply[40] = 1.toByte() // Type 1: Destination Unreachable
-        reply[41] = 0.toByte() // Code 0: No route to destination
-        System.arraycopy(originalPacket, 0, reply, 48, quotedLen)
-
-        val csum = ChecksumCalculator.computeIpv6TransportChecksum(
-            srcIp.address, dstIp.address, 58, reply, 40, icmpLen, 2
-        )
-        reply[42] = ((csum.toInt() shr 8) and 0xFF).toByte()
-        reply[43] = (csum.toInt() and 0xFF).toByte()
-        return reply
-    }
-
-    // =========================================================================
-    // DELAY QUEUE DISPATCHER & TUN WRITER
-    // =========================================================================
-
-    private fun dispatchDelayedPacket(packet: DelayedPacket) {
-        if (packet.isIncoming) {
-            writeToTun(packet.data)
-        } else {
-            sendUdpToNetwork(
-                packet.srcIp,
-                packet.srcPort,
-                packet.dstIp,
-                packet.dstPort,
-                packet.data,
-                packet.isIpv6,
-                packet.rawPacketForError
-            )
-        }
-    }
-
-    private fun writeToTun(data: ByteArray) {
-        if (!isRunning.get()) return
-        try {
-            synchronized(tunOut) {
-                tunOut.write(data)
-                tunOut.flush()
-            }
-            reportForwarded()
-        } catch (e: Exception) {
-            if (isRunning.get()) {
-                Log.e(TAG, "Error writing to TUN (len=\${data.size}): \${e.message}")
-            }
-        }
-    }
-
-    private fun reportForwarded() {
-        val forwarded = forwardedCount.incrementAndGet()
-        if (forwarded % 10L == 0L) {
-            onStatsUpdate(forwarded, droppedCount.get())
-        }
-    }
-
-    private fun reportDropped() {
-        val dropped = droppedCount.incrementAndGet()
-        onStatsUpdate(forwardedCount.get(), dropped)
-    }
-
-    // =========================================================================
-    // PACKET SYNTHESIS (IPv4 & IPv6 with RFC Checksums)
-    // =========================================================================
-
-    private fun synthesizeIpv4UdpPacket(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        payload: ByteArray
-    ): ByteArray {
-        val ipLen = 20
-        val udpLen = 8 + payload.size
-        val totalLen = ipLen + udpLen
-        val packet = ByteArray(totalLen)
-        val buf = ByteBuffer.wrap(packet)
-
-        buf.put(0x45.toByte())
-        buf.put(0x00.toByte())
-        buf.putShort(totalLen.toShort())
-        buf.putShort(Random.nextInt(65535).toShort())
-        buf.putShort(0x4000.toShort())
-        buf.put(64.toByte())
-        buf.put(17.toByte())
-        buf.putShort(0)
-        buf.put(srcIp.address)
-        buf.put(dstIp.address)
-
-        buf.putShort(srcPort.toShort())
-        buf.putShort(dstPort.toShort())
-        buf.putShort(udpLen.toShort())
-        buf.putShort(0)
-        buf.put(payload)
-
-        val ipChecksum = ChecksumCalculator.computeIpChecksum(packet, 0, ipLen)
-        packet[10] = ((ipChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[11] = (ipChecksum.toInt() and 0xFF).toByte()
-
-        val udpChecksum = ChecksumCalculator.computeUdpChecksum(srcIp.address, dstIp.address, packet, ipLen, udpLen)
-        packet[ipLen + 6] = ((udpChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[ipLen + 7] = (udpChecksum.toInt() and 0xFF).toByte()
-
-        return packet
-    }
-
-    private fun synthesizeIpv6UdpPacket(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        payload: ByteArray
-    ): ByteArray {
-        val ipLen = 40
-        val udpLen = 8 + payload.size
-        val totalLen = ipLen + udpLen
-        val packet = ByteArray(totalLen)
-        val buf = ByteBuffer.wrap(packet)
-
-        buf.put(0x60.toByte())
-        buf.put(0x00.toByte())
-        buf.putShort(0)
-        buf.putShort(udpLen.toShort())
-        buf.put(17.toByte()) // UDP
-        buf.put(64.toByte())
-        buf.put(srcIp.address)
-        buf.put(dstIp.address)
-
-        buf.putShort(srcPort.toShort())
-        buf.putShort(dstPort.toShort())
-        buf.putShort(udpLen.toShort())
-        buf.putShort(0)
-        buf.put(payload)
-
-        val udpChecksum = ChecksumCalculator.computeIpv6TransportChecksum(
-            srcIp.address, dstIp.address, 17, packet, ipLen, udpLen, 6
-        )
-        packet[ipLen + 6] = ((udpChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[ipLen + 7] = (udpChecksum.toInt() and 0xFF).toByte()
-
-        return packet
-    }
-
-    private fun synthesizeTcpPacket(
-        isIpv6: Boolean,
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        seq: Long,
-        ack: Long,
-        flags: Int,
-        payload: ByteArray = ByteArray(0),
-        windowSize: Int = 65535
-    ): ByteArray {
-        return if (isIpv6) {
-            synthesizeIpv6TcpPacket(srcIp, srcPort, dstIp, dstPort, seq, ack, flags, payload, windowSize)
-        } else {
-            synthesizeIpv4TcpPacket(srcIp, srcPort, dstIp, dstPort, seq, ack, flags, payload, windowSize)
-        }
-    }
-
-    private fun synthesizeIpv4TcpPacket(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        seq: Long,
-        ack: Long,
-        flags: Int,
-        payload: ByteArray,
-        windowSize: Int
-    ): ByteArray {
-        val ipLen = 20
-        val tcpLen = 20 + payload.size
-        val totalLen = ipLen + tcpLen
-        val packet = ByteArray(totalLen)
-        val buf = ByteBuffer.wrap(packet)
-
-        buf.put(0x45.toByte())
-        buf.put(0x00.toByte())
-        buf.putShort(totalLen.toShort())
-        buf.putShort(Random.nextInt(65535).toShort())
-        buf.putShort(0x4000.toShort())
-        buf.put(64.toByte())
-        buf.put(6.toByte())
-        buf.putShort(0)
-        buf.put(srcIp.address)
-        buf.put(dstIp.address)
-
-        buf.putShort(srcPort.toShort())
-        buf.putShort(dstPort.toShort())
-        buf.putInt((seq and 0xFFFFFFFFL).toInt())
-        buf.putInt((ack and 0xFFFFFFFFL).toInt())
-        buf.put(0x50.toByte())
-        buf.put(flags.toByte())
-        buf.putShort(windowSize.toShort())
-        buf.putShort(0)
-        buf.putShort(0)
-        if (payload.isNotEmpty()) buf.put(payload)
-
-        val ipChecksum = ChecksumCalculator.computeIpChecksum(packet, 0, ipLen)
-        packet[10] = ((ipChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[11] = (ipChecksum.toInt() and 0xFF).toByte()
-
-        val tcpChecksum = ChecksumCalculator.computeTcpChecksum(srcIp.address, dstIp.address, packet, ipLen, tcpLen)
-        packet[ipLen + 16] = ((tcpChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[ipLen + 17] = (tcpChecksum.toInt() and 0xFF).toByte()
-
-        return packet
-    }
-
-    private fun synthesizeIpv6TcpPacket(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        seq: Long,
-        ack: Long,
-        flags: Int,
-        payload: ByteArray,
-        windowSize: Int
-    ): ByteArray {
-        val ipLen = 40
-        val tcpLen = 20 + payload.size
-        val totalLen = ipLen + tcpLen
-        val packet = ByteArray(totalLen)
-        val buf = ByteBuffer.wrap(packet)
-
-        buf.put(0x60.toByte())
-        buf.put(0x00.toByte())
-        buf.putShort(0)
-        buf.putShort(tcpLen.toShort())
-        buf.put(6.toByte()) // TCP
-        buf.put(64.toByte())
-        buf.put(srcIp.address)
-        buf.put(dstIp.address)
-
-        buf.putShort(srcPort.toShort())
-        buf.putShort(dstPort.toShort())
-        buf.putInt((seq and 0xFFFFFFFFL).toInt())
-        buf.putInt((ack and 0xFFFFFFFFL).toInt())
-        buf.put(0x50.toByte())
-        buf.put(flags.toByte())
-        buf.putShort(windowSize.toShort())
-        buf.putShort(0)
-        buf.putShort(0)
-        if (payload.isNotEmpty()) buf.put(payload)
-
-        val tcpChecksum = ChecksumCalculator.computeIpv6TransportChecksum(
-            srcIp.address, dstIp.address, 6, packet, ipLen, tcpLen, 16
-        )
-        packet[ipLen + 16] = ((tcpChecksum.toInt() shr 8) and 0xFF).toByte()
-        packet[ipLen + 17] = (tcpChecksum.toInt() and 0xFF).toByte()
-
-        return packet
-    }
-
-    // =========================================================================
-    // IMPAIRMENT CALCULATORS
-    // =========================================================================
-
-    private fun shouldDropPacket(cfg: GlitchConfig): Boolean {
-        if (cfg.burstInterruptionEnabled && cfg.burstIntervalSeconds > 0) {
-            val nowMs = System.currentTimeMillis()
-            val cycleMs = cfg.burstIntervalSeconds * 1000L
-            val cyclePos = nowMs % cycleMs
-            if (cyclePos < cfg.burstDurationMs) {
-                return true
-            }
-        }
-
-        if (cfg.packetLossPercent <= 0.0) return false
-        val roll = Random.nextDouble(100.0)
-        return roll < cfg.packetLossPercent
-    }
-
-    private fun calculateDelay(cfg: GlitchConfig): Long {
-        val base = cfg.baseLatencyMs.toLong()
-        val jitter = cfg.randomJitterMs
-        if (jitter <= 0) return base
-        val randomOffset = Random.nextInt(-jitter, jitter + 1)
-        return (base + randomOffset).coerceAtLeast(0L)
-    }
-
-    // =========================================================================
-    // HOUSEKEEPING & LIFECYCLE
-    // =========================================================================
-
-    private fun cleanStaleSessions() {
-        val now = System.currentTimeMillis()
-
-        val udpIt = udpSessions.entries.iterator()
-        while (udpIt.hasNext()) {
-            val entry = udpIt.next()
-            if (now - entry.value.lastActivity > 90000L) {
-                try { entry.value.socket.close() } catch (ignored: Exception) {}
-                udpIt.remove()
-            }
-        }
-
-        val tcpIt = tcpSessions.entries.iterator()
-        while (tcpIt.hasNext()) {
-            val entry = tcpIt.next()
-            if (entry.value.isClosed.get() || now - entry.value.lastActivity > 90000L) {
-                entry.value.close()
-                tcpIt.remove()
-            }
-        }
-    }
-
-    fun isHealthy(): Boolean {
-        return isRunning.get()
+    fun resetActiveSessionsOnNetworkChange() {
+        tcpSessions.values.forEach { it.close() }
+        udpSessions.values.forEach { it.close() }
     }
 
     fun stop() {
-        if (!isRunning.compareAndSet(true, false)) return
-        delayQueue.clear()
-
-        udpSessions.values.forEach { session ->
-            try { session.socket.close() } catch (ignored: Exception) {}
+        if (!running.compareAndSet(true, false) && serverSocket == null) {
+            return
         }
+        try {
+            serverSocket?.close()
+        } catch (_: Exception) {
+        } finally {
+            serverSocket = null
+            port = 0
+        }
+
+        acceptJob?.cancel()
+        acceptJob = null
+
+        tcpSessions.values.toList().forEach { it.close() }
+        tcpSessions.clear()
+        udpSessions.values.toList().forEach { it.close() }
         udpSessions.clear()
 
-        tcpSessions.values.forEach { session ->
-            session.close()
-        }
-        tcpSessions.clear()
-
-        try { tunIn.close() } catch (ignored: Exception) {}
-        try { tunOut.close() } catch (ignored: Exception) {}
-
-        engineScope.cancel()
-        socketExecutor.shutdownNow()
+        proxyScope.cancel()
+        executor.shutdownNow()
     }
 
-    // =========================================================================
-    // DATA STRUCTURES
-    // =========================================================================
+    private suspend fun handleClientConnection(sessionId: Long, client: Socket) {
+        try {
+            client.tcpNoDelay = true
+            client.soTimeout = 30_000
 
-    private data class DelayedPacket(
-        val data: ByteArray,
-        val scheduledReleaseTime: Long,
-        val isIncoming: Boolean,
-        val srcIp: InetAddress,
-        val srcPort: Int,
-        val dstIp: InetAddress,
-        val dstPort: Int,
-        val isIpv6: Boolean,
-        val rawPacketForError: ByteArray?
-    )
+            val input = client.getInputStream()
+            val output = client.getOutputStream()
 
-    private data class UdpSession(
-        val sessionKey: String,
-        val socket: DatagramSocket,
-        val srcIp: InetAddress,
-        val srcPort: Int,
-        val isIpv6: Boolean,
-        @Volatile var lastActivity: Long
-    )
-
-    private inner class TcpSession(
-        val sessionKey: String,
-        val isIpv6: Boolean,
-        val clientIp: InetAddress,
-        val clientPort: Int,
-        val serverIp: InetAddress,
-        val serverPort: Int,
-        @Volatile var clientNextAck: Long,
-        @Volatile var serverSeq: Long
-    ) {
-        val socket = Socket()
-        val isClosed = AtomicBoolean(false)
-        @Volatile var lastActivity = System.currentTimeMillis()
-        private val outboundChannel = Channel<ByteArray>(Channel.UNLIMITED)
-
-        fun enqueueOutbound(data: ByteArray) {
-            if (!isClosed.get()) {
-                outboundChannel.trySend(data)
+            // 1. Method Negotiation: VER | NMETHODS | METHODS
+            val ver = input.readByteUnsigned()
+            if (ver != SOCKS_VERSION) {
+                client.close()
+                return
             }
+            val nMethods = input.readByteUnsigned()
+            val methods = input.readExact(nMethods)
+            val supportsNoAuth = methods.any { (it.toInt() and 0xFF) == AUTH_NO_AUTH }
+            if (!supportsNoAuth) {
+                output.write(byteArrayOf(SOCKS_VERSION.toByte(), AUTH_NO_ACCEPTABLE.toByte()))
+                output.flush()
+                client.close()
+                return
+            }
+            output.write(byteArrayOf(SOCKS_VERSION.toByte(), AUTH_NO_AUTH.toByte()))
+            output.flush()
+
+            // 2. Request: VER | CMD | RSV | ATYP | DST.ADDR | DST.PORT
+            val reqHeader = input.readExact(4)
+            if ((reqHeader[0].toInt() and 0xFF) != SOCKS_VERSION) {
+                client.close()
+                return
+            }
+            val cmd = reqHeader[1].toInt() and 0xFF
+            val atyp = reqHeader[3].toInt() and 0xFF
+            val target = readSocksAddress(input, atyp) ?: run {
+                sendReply(output, REPLY_ADDRESS_TYPE_NOT_SUPPORTED, null, 0)
+                client.close()
+                return
+            }
+
+            when (cmd) {
+                CMD_CONNECT -> handleTcpConnect(sessionId, client, input, output, target)
+                CMD_UDP_ASSOCIATE -> handleUdpAssociate(sessionId, client, input, output)
+                else -> {
+                    sendReply(output, REPLY_COMMAND_NOT_SUPPORTED, null, 0)
+                    client.close()
+                }
+            }
+        } catch (_: EOFException) {
+            runCatching { client.close() }
+        } catch (_: SocketException) {
+            runCatching { client.close() }
+        } catch (e: Exception) {
+            if (running.get()) {
+                onError("LocalSocks5Proxy", "Client handshake error: \${e.message}")
+            }
+            runCatching { client.close() }
+        }
+    }
+
+    private suspend fun handleTcpConnect(
+        sessionId: Long,
+        clientSocket: Socket,
+        clientIn: InputStream,
+        clientOut: OutputStream,
+        target: SocksAddress
+    ) {
+        val targetAddr = try {
+            withContext(Dispatchers.IO) {
+                resolveTargetAddress(target)
+            }
+        } catch (e: Exception) {
+            sendReply(clientOut, REPLY_HOST_UNREACHABLE, null, 0)
+            runCatching { clientSocket.close() }
+            return
         }
 
-        fun start() {
-            vpnService.protect(socket)
-            engineScope.launch {
-                try {
-                    socket.tcpNoDelay = true
-                    socket.connect(InetSocketAddress(serverIp, serverPort), 10000)
+        val outbound = Socket()
+        try {
+            outbound.tcpNoDelay = true
+            // Bind ephemeral wildcard endpoint matching target address family before protect()
+            // so the native socket FD exists prior to VpnService.protect() and TCP SYN.
+            val wildcardBind = if (targetAddr is Inet6Address) {
+                InetSocketAddress(InetAddress.getByAddress(ByteArray(16)), 0)
+            } else {
+                InetSocketAddress(InetAddress.getByAddress(byteArrayOf(0, 0, 0, 0)), 0)
+            }
+            outbound.bind(wildcardBind)
 
-                    // Outbound FIFO writer coroutine (guarantees strict order & non-blocking TUN reads)
-                    val writerJob = launch {
-                        val outStream = socket.getOutputStream()
-                        for (data in outboundChannel) {
-                            if (isClosed.get() || !isRunning.get()) break
-                            lastActivity = System.currentTimeMillis()
+            if (!socketProtector.protect(outbound)) {
+                val msg = "VpnService.protect() rejected outbound TCP socket for \${targetAddr.hostAddress}:\${target.port}"
+                onError("SocketProtector", msg)
+                outbound.close()
+                sendReply(clientOut, REPLY_GENERAL_FAILURE, null, 0)
+                clientSocket.close()
+                throw SocketProtectionException(msg)
+            }
 
-                            val cfg = config
-                            val isDnsOrDot = serverPort == 53 || serverPort == 853
-                            if (cfg.affectTcp && !isDnsOrDot &&
-                                (cfg.direction == ImpairmentDirection.BOTH || cfg.direction == ImpairmentDirection.OUTGOING)
-                            ) {
-                                val delayMs = calculateDelay(cfg)
-                                if (delayMs > 0) delay(delayMs)
-                                // Simulate TCP retransmission stall safely without corrupting byte stream
-                                if (shouldDropPacket(cfg)) {
-                                    reportDropped()
-                                    delay(350L)
+            withContext(Dispatchers.IO) {
+                outbound.connect(InetSocketAddress(targetAddr, target.port), connectTimeoutMs)
+            }
+
+            clientSocket.soTimeout = 0
+            outbound.soTimeout = 0
+
+            sendReply(clientOut, REPLY_SUCCEEDED, outbound.localAddress, outbound.localPort)
+        } catch (e: SocketProtectionException) {
+            runCatching { outbound.close() }
+            runCatching { clientSocket.close() }
+            return
+        } catch (e: Exception) {
+            runCatching { sendReply(clientOut, REPLY_HOST_UNREACHABLE, null, 0) }
+            runCatching { outbound.close() }
+            runCatching { clientSocket.close() }
+            return
+        }
+
+        val session = TcpRelaySession(
+            id = sessionId,
+            clientSocket = clientSocket,
+            outboundSocket = outbound
+        )
+        tcpSessions[sessionId] = session
+        activeTcpCount.incrementAndGet()
+
+        try {
+            coroutineScope {
+                val uplink = launch {
+                    relayTcpStream(
+                        srcIn = clientIn,
+                        dstOut = outbound.getOutputStream(),
+                        dstSocket = outbound,
+                        direction = TrafficDirection.OUTGOING,
+                        session = session
+                    )
+                }
+                val downlink = launch {
+                    relayTcpStream(
+                        srcIn = outbound.getInputStream(),
+                        dstOut = clientOut,
+                        dstSocket = clientSocket,
+                        direction = TrafficDirection.INCOMING,
+                        session = session
+                    )
+                }
+                joinAll(uplink, downlink)
+            }
+        } finally {
+            session.close()
+            tcpSessions.remove(sessionId)
+            activeTcpCount.decrementAndGet()
+        }
+    }
+
+    private suspend fun relayTcpStream(
+        srcIn: InputStream,
+        dstOut: OutputStream,
+        dstSocket: Socket,
+        direction: TrafficDirection,
+        session: TcpRelaySession
+    ) {
+        val channel = Channel<ByteArray>(capacity = tcpBufferQueueCapacity)
+        var nextAvailableTxMs = impairmentController.nowMs()
+
+        try {
+            coroutineScope {
+                val reader = launch {
+                    val buffer = ByteArray(8192)
+                    try {
+                        while (isActive && !session.isClosed && running.get()) {
+                            val read = srcIn.read(buffer)
+                            if (read < 0) break
+                            if (read > 0) {
+                                channel.send(buffer.copyOf(read))
+                            }
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        channel.close()
+                    }
+                }
+
+                val writer = launch {
+                    try {
+                        for (chunk in channel) {
+                            while (isActive && !session.isClosed && running.get()) {
+                                val plan = impairmentController.computeTcpWritePlan(
+                                    direction = direction,
+                                    byteCount = chunk.size,
+                                    nextAvailableTxMs = nextAvailableTxMs
+                                )
+                                if (plan.inBurstPause) {
+                                    delay(50L)
+                                    continue
+                                }
+
+                                val waitMs = plan.releaseAtMs - impairmentController.nowMs()
+                                if (waitMs > 0L) {
+                                    // Sleep in short slices while allowing burst window updates or cancellation
+                                    var remaining = waitMs
+                                    while (remaining > 0L && isActive && !session.isClosed && running.get()) {
+                                        val step = remaining.coerceAtMost(50L)
+                                        delay(step)
+                                        remaining = plan.releaseAtMs - impairmentController.nowMs()
+                                        if (impairmentController.currentConfig.affectTcp &&
+                                            impairmentController.isInBurstWindow()
+                                        ) {
+                                            break
+                                        }
+                                    }
+                                    if (impairmentController.currentConfig.affectTcp &&
+                                        impairmentController.isInBurstWindow()
+                                    ) {
+                                        continue
+                                    }
+                                }
+
+                                dstOut.write(chunk)
+                                if (channel.isEmpty) {
+                                    dstOut.flush()
+                                }
+                                nextAvailableTxMs = plan.nextAvailableAtMs
+                                impairmentController.recordTcpWrite(
+                                    byteCount = chunk.size,
+                                    appliedDelay = plan.appliedDelay,
+                                    appliedThrottle = plan.appliedThrottle
+                                )
+                                break
+                            }
+                        }
+                        runCatching {
+                            if (!dstSocket.isClosed && !dstSocket.isOutputShutdown) {
+                                dstSocket.shutdownOutput()
+                            }
+                        }
+                    } catch (_: Exception) {
+                        session.close()
+                    }
+                }
+
+                joinAll(reader, writer)
+            }
+        } finally {
+            channel.close()
+        }
+    }
+
+    private suspend fun handleUdpAssociate(
+        sessionId: Long,
+        ctrlSocket: Socket,
+        ctrlIn: InputStream,
+        ctrlOut: OutputStream
+    ) {
+        val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+        val clientRelaySocket = try {
+            DatagramSocket(0, loopback)
+        } catch (e: Exception) {
+            sendReply(ctrlOut, REPLY_GENERAL_FAILURE, null, 0)
+            runCatching { ctrlSocket.close() }
+            return
+        }
+
+        val outboundUdpSocket = try {
+            DatagramSocket()
+        } catch (e: Exception) {
+            runCatching { clientRelaySocket.close() }
+            sendReply(ctrlOut, REPLY_GENERAL_FAILURE, null, 0)
+            runCatching { ctrlSocket.close() }
+            return
+        }
+
+        if (!socketProtector.protect(outboundUdpSocket)) {
+            val msg = "VpnService.protect() rejected outbound UDP socket"
+            onError("SocketProtector", msg)
+            runCatching { outboundUdpSocket.close() }
+            runCatching { clientRelaySocket.close() }
+            runCatching { sendReply(ctrlOut, REPLY_GENERAL_FAILURE, null, 0) }
+            runCatching { ctrlSocket.close() }
+            return
+        }
+
+        try {
+            ctrlSocket.soTimeout = 0
+            sendReply(ctrlOut, REPLY_SUCCEEDED, loopback, clientRelaySocket.localPort)
+        } catch (e: Exception) {
+            runCatching { outboundUdpSocket.close() }
+            runCatching { clientRelaySocket.close() }
+            runCatching { ctrlSocket.close() }
+            return
+        }
+
+        val session = UdpRelaySession(
+            id = sessionId,
+            ctrlSocket = ctrlSocket,
+            clientRelaySocket = clientRelaySocket,
+            outboundUdpSocket = outboundUdpSocket,
+            lastActivityMs = impairmentController.nowMs()
+        )
+        udpSessions[sessionId] = session
+        activeUdpCount.incrementAndGet()
+
+        val dnsCache = ConcurrentHashMap<String, InetAddress>()
+        val outgoingQueue = UdpScheduledQueue(maxUdpQueuePerDirection)
+        val incomingQueue = UdpScheduledQueue(maxUdpQueuePerDirection)
+
+        try {
+            coroutineScope {
+                // 1. Control TCP connection EOF monitor (RFC 1928: UDP association ends when TCP closes)
+                val ctrlWatcher = launch {
+                    try {
+                        val b = ByteArray(64)
+                        while (isActive && !session.isClosed && running.get()) {
+                            val r = ctrlIn.read(b)
+                            if (r < 0) break
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        session.close()
+                    }
+                }
+
+                // 2. Idle watchdog
+                val idleWatcher = launch {
+                    while (isActive && !session.isClosed && running.get()) {
+                        delay(10_000L.coerceAtMost(udpIdleTimeoutMs / 2).coerceAtLeast(500L))
+                        if (impairmentController.nowMs() - session.lastActivityMs > udpIdleTimeoutMs) {
+                            session.close()
+                            break
+                        }
+                    }
+                }
+
+                // 3. Client -> Outbound UDP Reader
+                val uplinkReader = launch {
+                    val buf = ByteArray(65535)
+                    val packet = DatagramPacket(buf, buf.size)
+                    while (isActive && !session.isClosed && running.get()) {
+                        try {
+                            packet.length = buf.size
+                            clientRelaySocket.receive(packet)
+                            val srcAddr = packet.address ?: continue
+                            if (!srcAddr.isLoopbackAddress) continue
+
+                            session.clientPeer = InetSocketAddress(srcAddr, packet.port)
+                            session.lastActivityMs = impairmentController.nowMs()
+
+                            val frame = parseSocks5UdpFrame(buf, packet.length) ?: continue
+                            val resolvedDst = resolveSocksUdpDestination(frame.address, dnsCache) ?: continue
+                            val isDns = frame.address.port == 53
+
+                            when (val decision = impairmentController.evaluateUdp(TrafficDirection.OUTGOING, isDns)) {
+                                UdpImpairmentDecision.Drop -> Unit
+                                is UdpImpairmentDecision.Forward -> {
+                                    if (decision.delayMs <= 0L) {
+                                        val outPkt = DatagramPacket(
+                                            frame.payload,
+                                            frame.payload.size,
+                                            resolvedDst,
+                                            frame.address.port
+                                        )
+                                        outboundUdpSocket.send(outPkt)
+                                    } else {
+                                        val enqueued = outgoingQueue.enqueue(
+                                            ScheduledUdpDatagram(
+                                                releaseAtMs = impairmentController.nowMs() + decision.delayMs,
+                                                payload = frame.payload,
+                                                address = resolvedDst,
+                                                port = frame.address.port
+                                            )
+                                        )
+                                        if (!enqueued) {
+                                            impairmentController.recordUdpQueueDrop()
+                                        }
+                                    }
                                 }
                             }
-
-                            outStream.write(data)
-                            outStream.flush()
-                            reportForwarded()
+                        } catch (_: Exception) {
+                            if (session.isClosed || !running.get()) break
                         }
                     }
+                }
 
-                    // Inbound reader coroutine (chunks responses to <= 1380 bytes so MTU 1500 is never exceeded)
-                    val inStream = socket.getInputStream()
-                    val buf = ByteArray(16384)
-                    while (isRunning.get() && !isClosed.get()) {
-                        val bytesRead = inStream.read(buf)
-                        if (bytesRead == -1) break
-                        lastActivity = System.currentTimeMillis()
-
-                        val cfg = config
-                        val isDnsOrDot = serverPort == 53 || serverPort == 853
-                        if (cfg.affectTcp && !isDnsOrDot &&
-                            (cfg.direction == ImpairmentDirection.BOTH || cfg.direction == ImpairmentDirection.INCOMING)
-                        ) {
-                            val delayMs = calculateDelay(cfg)
-                            if (delayMs > 0) delay(delayMs)
-                            if (shouldDropPacket(cfg)) {
-                                reportDropped()
-                                delay(350L)
+                // 4. Outgoing delayed dispatcher
+                val uplinkDispatcher = launch {
+                    outgoingQueue.dispatchLoop(
+                        isAlive = { isActive && !session.isClosed && running.get() },
+                        nowProvider = { impairmentController.nowMs() },
+                        sender = { item ->
+                            runCatching {
+                                outboundUdpSocket.send(
+                                    DatagramPacket(item.payload, item.payload.size, item.address, item.port)
+                                )
                             }
                         }
+                    )
+                }
 
-                        var offset = 0
-                        while (offset < bytesRead && isRunning.get() && !isClosed.get()) {
-                            val chunkSize = minOf(MAX_TCP_PAYLOAD, bytesRead - offset)
-                            val chunk = buf.copyOfRange(offset, offset + chunkSize)
-                            val tcpPacket = synthesizeTcpPacket(
-                                isIpv6 = isIpv6,
-                                srcIp = serverIp,
-                                srcPort = serverPort,
-                                dstIp = clientIp,
-                                dstPort = clientPort,
-                                seq = serverSeq,
-                                ack = clientNextAck,
-                                flags = 0x18, // PSH | ACK
-                                payload = chunk
-                            )
-                            serverSeq = (serverSeq + chunkSize) and 0xFFFFFFFFL
-                            writeToTun(tcpPacket)
-                            offset += chunkSize
+                // 5. Outbound -> Client UDP Reader
+                val downlinkReader = launch {
+                    val buf = ByteArray(65535)
+                    val packet = DatagramPacket(buf, buf.size)
+                    while (isActive && !session.isClosed && running.get()) {
+                        try {
+                            packet.length = buf.size
+                            outboundUdpSocket.receive(packet)
+                            val peer = session.clientPeer ?: continue
+                            val remoteAddr = packet.address ?: continue
+                            val remotePort = packet.port
+                            session.lastActivityMs = impairmentController.nowMs()
+
+                            val rawPayload = buf.copyOf(packet.length)
+                            val isDns = remotePort == 53
+
+                            when (val decision = impairmentController.evaluateUdp(TrafficDirection.INCOMING, isDns)) {
+                                UdpImpairmentDecision.Drop -> Unit
+                                is UdpImpairmentDecision.Forward -> {
+                                    val wrapped = encodeSocks5UdpFrame(remoteAddr, remotePort, rawPayload)
+                                    if (decision.delayMs <= 0L) {
+                                        clientRelaySocket.send(
+                                            DatagramPacket(wrapped, wrapped.size, peer.address, peer.port)
+                                        )
+                                    } else {
+                                        val enqueued = incomingQueue.enqueue(
+                                            ScheduledUdpDatagram(
+                                                releaseAtMs = impairmentController.nowMs() + decision.delayMs,
+                                                payload = wrapped,
+                                                address = peer.address,
+                                                port = peer.port
+                                            )
+                                        )
+                                        if (!enqueued) {
+                                            impairmentController.recordUdpQueueDrop()
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {
+                            if (session.isClosed || !running.get()) break
                         }
                     }
+                }
 
-                    writerJob.cancel()
+                // 6. Incoming delayed dispatcher
+                val downlinkDispatcher = launch {
+                    incomingQueue.dispatchLoop(
+                        isAlive = { isActive && !session.isClosed && running.get() },
+                        nowProvider = { impairmentController.nowMs() },
+                        sender = { item ->
+                            runCatching {
+                                clientRelaySocket.send(
+                                    DatagramPacket(item.payload, item.payload.size, item.address, item.port)
+                                )
+                            }
+                        }
+                    )
+                }
 
-                    if (!isClosed.get()) {
-                        val finPacket = synthesizeTcpPacket(
-                            isIpv6 = isIpv6,
-                            srcIp = serverIp,
-                            srcPort = serverPort,
-                            dstIp = clientIp,
-                            dstPort = clientPort,
-                            seq = serverSeq,
-                            ack = clientNextAck,
-                            flags = 0x11 // FIN | ACK
-                        )
-                        serverSeq = (serverSeq + 1L) and 0xFFFFFFFFL
-                        writeToTun(finPacket)
+                joinAll(ctrlWatcher, idleWatcher, uplinkReader, uplinkDispatcher, downlinkReader, downlinkDispatcher)
+            }
+        } finally {
+            outgoingQueue.clear()
+            incomingQueue.clear()
+            session.close()
+            udpSessions.remove(sessionId)
+            activeUdpCount.decrementAndGet()
+        }
+    }
+
+    private fun resolveTargetAddress(target: SocksAddress): InetAddress {
+        return when (target.atyp) {
+            ATYP_IPV4, ATYP_IPV6 -> InetAddress.getByAddress(target.rawAddress)
+            ATYP_DOMAIN -> InetAddress.getByName(target.domain!!)
+            else -> throw IOException("Unsupported ATYP: \${target.atyp}")
+        }
+    }
+
+    private fun resolveSocksUdpDestination(
+        addr: SocksAddress,
+        dnsCache: ConcurrentHashMap<String, InetAddress>
+    ): InetAddress? {
+        return try {
+            when (addr.atyp) {
+                ATYP_IPV4, ATYP_IPV6 -> InetAddress.getByAddress(addr.rawAddress)
+                ATYP_DOMAIN -> {
+                    val host = addr.domain ?: return null
+                    dnsCache[host] ?: InetAddress.getByName(host).also { dnsCache[host] = it }
+                }
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun sendReply(
+        output: OutputStream,
+        rep: Int,
+        bindAddr: InetAddress?,
+        bindPort: Int
+    ) {
+        val raw = bindAddr?.address
+        val (atyp, addrBytes) = when {
+            raw != null && raw.size == 16 -> ATYP_IPV6 to raw
+            raw != null && raw.size == 4 -> ATYP_IPV4 to raw
+            else -> ATYP_IPV4 to byteArrayOf(0, 0, 0, 0)
+        }
+        val packet = ByteArray(4 + addrBytes.size + 2)
+        packet[0] = SOCKS_VERSION.toByte()
+        packet[1] = rep.toByte()
+        packet[2] = 0x00
+        packet[3] = atyp.toByte()
+        System.arraycopy(addrBytes, 0, packet, 4, addrBytes.size)
+        packet[4 + addrBytes.size] = ((bindPort ushr 8) and 0xFF).toByte()
+        packet[4 + addrBytes.size + 1] = (bindPort and 0xFF).toByte()
+        output.write(packet)
+        output.flush()
+    }
+
+    private fun readSocksAddress(input: InputStream, atyp: Int): SocksAddress? {
+        return when (atyp) {
+            ATYP_IPV4 -> {
+                val addr = input.readExact(4)
+                val port = input.readShortUnsigned()
+                SocksAddress(atyp, addr, null, port)
+            }
+            ATYP_IPV6 -> {
+                val addr = input.readExact(16)
+                val port = input.readShortUnsigned()
+                SocksAddress(atyp, addr, null, port)
+            }
+            ATYP_DOMAIN -> {
+                val len = input.readByteUnsigned()
+                val domainBytes = input.readExact(len)
+                val port = input.readShortUnsigned()
+                SocksAddress(atyp, ByteArray(0), String(domainBytes, Charsets.UTF_8), port)
+            }
+            else -> null
+        }
+    }
+
+    private fun parseSocks5UdpFrame(data: ByteArray, length: Int): SocksUdpFrame? {
+        if (length < 10) return null
+        val frag = data[2].toInt() and 0xFF
+        if (frag != 0) return null
+        val atyp = data[3].toInt() and 0xFF
+
+        var offset = 4
+        val address: SocksAddress = when (atyp) {
+            ATYP_IPV4 -> {
+                if (offset + 4 + 2 > length) return null
+                val raw = data.copyOfRange(offset, offset + 4)
+                offset += 4
+                val port = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+                offset += 2
+                SocksAddress(atyp, raw, null, port)
+            }
+            ATYP_IPV6 -> {
+                if (offset + 16 + 2 > length) return null
+                val raw = data.copyOfRange(offset, offset + 16)
+                offset += 16
+                val port = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+                offset += 2
+                SocksAddress(atyp, raw, null, port)
+            }
+            ATYP_DOMAIN -> {
+                if (offset + 1 > length) return null
+                val domainLen = data[offset].toInt() and 0xFF
+                offset += 1
+                if (offset + domainLen + 2 > length) return null
+                val domain = String(data, offset, domainLen, Charsets.UTF_8)
+                offset += domainLen
+                val port = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+                offset += 2
+                SocksAddress(atyp, ByteArray(0), domain, port)
+            }
+            else -> return null
+        }
+
+        val payload = data.copyOfRange(offset, length)
+        return SocksUdpFrame(address, payload)
+    }
+
+    private fun encodeSocks5UdpFrame(addr: InetAddress, port: Int, payload: ByteArray): ByteArray {
+        val rawAddr = addr.address
+        val atyp = when (addr) {
+            is Inet6Address -> ATYP_IPV6
+            is Inet4Address -> ATYP_IPV4
+            else -> if (rawAddr.size == 16) ATYP_IPV6 else ATYP_IPV4
+        }
+        val headerSize = 4 + rawAddr.size + 2
+        val out = ByteBuffer.allocate(headerSize + payload.size)
+        out.put(0x00)
+        out.put(0x00)
+        out.put(0x00)
+        out.put(atyp.toByte())
+        out.put(rawAddr)
+        out.putShort(port.toShort())
+        out.put(payload)
+        return out.array()
+    }
+
+    private fun InputStream.readByteUnsigned(): Int {
+        val v = read()
+        if (v < 0) throw EOFException("Unexpected EOF")
+        return v
+    }
+
+    private fun InputStream.readShortUnsigned(): Int {
+        val hi = readByteUnsigned()
+        val lo = readByteUnsigned()
+        return (hi shl 8) or lo
+    }
+
+    private fun InputStream.readExact(count: Int): ByteArray {
+        val buf = ByteArray(count)
+        var offset = 0
+        while (offset < count) {
+            val read = read(buf, offset, count - offset)
+            if (read < 0) throw EOFException("Unexpected EOF after $offset/$count bytes")
+            offset += read
+        }
+        return buf
+    }
+
+    private data class SocksAddress(
+        val atyp: Int,
+        val rawAddress: ByteArray,
+        val domain: String?,
+        val port: Int
+    )
+
+    private data class SocksUdpFrame(
+        val address: SocksAddress,
+        val payload: ByteArray
+    )
+
+    private class TcpRelaySession(
+        val id: Long,
+        private val clientSocket: Socket,
+        private val outboundSocket: Socket
+    ) {
+        private val closed = AtomicBoolean(false)
+        val isClosed: Boolean get() = closed.get()
+
+        fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            runCatching { clientSocket.close() }
+            runCatching { outboundSocket.close() }
+        }
+    }
+
+    private class UdpRelaySession(
+        val id: Long,
+        private val ctrlSocket: Socket,
+        private val clientRelaySocket: DatagramSocket,
+        private val outboundUdpSocket: DatagramSocket,
+        @Volatile var lastActivityMs: Long
+    ) {
+        @Volatile
+        var clientPeer: InetSocketAddress? = null
+        private val closed = AtomicBoolean(false)
+        val isClosed: Boolean get() = closed.get()
+
+        fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            runCatching { clientRelaySocket.close() }
+            runCatching { outboundUdpSocket.close() }
+            runCatching { ctrlSocket.close() }
+        }
+    }
+
+    private data class ScheduledUdpDatagram(
+        val releaseAtMs: Long,
+        val payload: ByteArray,
+        val address: InetAddress,
+        val port: Int,
+        val seq: Long = seqGen.incrementAndGet()
+    ) : Comparable<ScheduledUdpDatagram> {
+        override fun compareTo(other: ScheduledUdpDatagram): Int {
+            val cmp = releaseAtMs.compareTo(other.releaseAtMs)
+            return if (cmp != 0) cmp else seq.compareTo(other.seq)
+        }
+
+        companion object {
+            private val seqGen = AtomicLong(0)
+        }
+    }
+
+    private class UdpScheduledQueue(private val maxCapacity: Int) {
+        private val lock = Any()
+        private val heap = PriorityQueue<ScheduledUdpDatagram>()
+        private val wakeup = Channel<Unit>(Channel.CONFLATED)
+
+        fun enqueue(item: ScheduledUdpDatagram): Boolean {
+            synchronized(lock) {
+                if (heap.size >= maxCapacity) {
+                    return false
+                }
+                heap.add(item)
+            }
+            wakeup.trySend(Unit)
+            return true
+        }
+
+        suspend fun dispatchLoop(
+            isAlive: () -> Boolean,
+            nowProvider: () -> Long,
+            sender: (ScheduledUdpDatagram) -> Unit
+        ) {
+            while (isAlive()) {
+                var nextWaitMs = 20L
+                while (isAlive()) {
+                    val itemToSend: ScheduledUdpDatagram?
+                    synchronized(lock) {
+                        val head = heap.peek()
+                        if (head == null) {
+                            nextWaitMs = 50L
+                            itemToSend = null
+                        } else {
+                            val now = nowProvider()
+                            if (head.releaseAtMs <= now) {
+                                itemToSend = heap.poll()
+                            } else {
+                                nextWaitMs = (head.releaseAtMs - now).coerceIn(1L, 50L)
+                                itemToSend = null
+                            }
+                        }
                     }
-                } catch (e: Exception) {
-                    Log.d(TAG, "TCP session $clientPort->$serverIp:$serverPort closed: \${e.message}")
-                    if (!isClosed.get()) {
-                        val rst = synthesizeTcpPacket(
-                            isIpv6 = isIpv6,
-                            srcIp = serverIp,
-                            srcPort = serverPort,
-                            dstIp = clientIp,
-                            dstPort = clientPort,
-                            seq = serverSeq,
-                            ack = clientNextAck,
-                            flags = 0x14 // RST | ACK
-                        )
-                        writeToTun(rst)
+                    if (itemToSend != null) {
+                        sender(itemToSend)
+                    } else {
+                        break
                     }
-                } finally {
-                    tcpSessions.remove(sessionKey, this@TcpSession)
-                    close()
+                }
+                withTimeoutOrNull(nextWaitMs) {
+                    wakeup.receive()
                 }
             }
         }
 
-        fun close() {
-            if (isClosed.compareAndSet(false, true)) {
-                outboundChannel.close()
-                try { socket.close() } catch (ignored: Exception) {}
+        fun clear() {
+            synchronized(lock) {
+                heap.clear()
             }
+            wakeup.close()
         }
+    }
+
+    companion object {
+        private const val SOCKS_VERSION = 0x05
+        private const val AUTH_NO_AUTH = 0x00
+        private const val AUTH_NO_ACCEPTABLE = 0xFF
+
+        private const val CMD_CONNECT = 0x01
+        private const val CMD_UDP_ASSOCIATE = 0x03
+
+        private const val ATYP_IPV4 = 0x01
+        private const val ATYP_DOMAIN = 0x03
+        private const val ATYP_IPV6 = 0x04
+
+        private const val REPLY_SUCCEEDED = 0x00
+        private const val REPLY_GENERAL_FAILURE = 0x01
+        private const val REPLY_COMMAND_NOT_SUPPORTED = 0x07
+        private const val REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
+        private const val REPLY_HOST_UNREACHABLE = 0x04
     }
 }
+`
+  },
+  {
+    path: "app/src/main/java/com/callglitch/app/vpn/ImpairmentController.kt",
+    language: "kotlin",
+    description: "Deterministic UDP loss/burst/delay engine and non-corrupting TCP latency/pacing/pause engine",
+    content: `package com.callglitch.app.vpn
+
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.ImpairmentDirection
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.random.Random
+
+interface TimeProvider {
+    fun nowMs(): Long
+}
+
+object SystemTimeProvider : TimeProvider {
+    override fun nowMs(): Long = System.currentTimeMillis()
+}
+
+interface RandomProvider {
+    /** Returns a double in [0.0, 1.0). */
+    fun nextDouble(): Double
+
+    /** Returns a signed double in [-1.0, 1.0]. */
+    fun nextSignedUnit(): Double
+}
+
+object DefaultRandomProvider : RandomProvider {
+    override fun nextDouble(): Double = Random.nextDouble()
+    override fun nextSignedUnit(): Double = Random.nextDouble(-1.0, 1.0)
+}
+
+enum class TrafficDirection {
+    OUTGOING,
+    INCOMING
+}
+
+sealed class UdpImpairmentDecision {
+    object Drop : UdpImpairmentDecision()
+    data class Forward(val delayMs: Long) : UdpImpairmentDecision()
+}
+
+data class TcpWritePlan(
+    val releaseAtMs: Long,
+    val nextAvailableAtMs: Long,
+    val inBurstPause: Boolean,
+    val appliedDelay: Boolean,
+    val appliedThrottle: Boolean
+)
+
+data class ImpairmentMetrics(
+    val forwardedUdpDatagrams: Long,
+    val droppedUdpDatagrams: Long,
+    val forwardedTcpBytes: Long,
+    val delayedTcpWrites: Long,
+    val throttledTcpEvents: Long
+)
 
 /**
- * Standard RFC-compliant one's complement checksum engine for IPv4, IPv6, UDP, TCP, and ICMP/ICMPv6.
+ * Thread-safe, deterministic network impairment policy engine used by the local SOCKS5 proxy.
+ *
+ * - UDP packets are evaluated per complete datagram (never fragmented or payload-corrupted).
+ * - TCP streams are never arbitrarily dropped or corrupted; instead they experience safe
+ *   latency, jitter, bandwidth pacing, temporary burst pauses, and backpressure.
  */
-object ChecksumCalculator {
-    fun computeChecksum(buffer: ByteArray, offset: Int, length: Int): Short {
-        var sum = 0
-        var i = offset
-        val end = offset + length
-        while (i < end - 1) {
-            val word = ((buffer[i].toInt() and 0xFF) shl 8) or (buffer[i + 1].toInt() and 0xFF)
-            sum += word
-            i += 2
-        }
-        if (i < end) {
-            sum += ((buffer[i].toInt() and 0xFF) shl 8)
-        }
-        while ((sum shr 16) > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val res = (sum.inv() and 0xFFFF).toShort()
-        return if (res == 0.toShort()) 0xFFFF.toShort() else res
+class ImpairmentController(
+    initialConfig: GlitchConfig,
+    private val timeProvider: TimeProvider = SystemTimeProvider,
+    private val randomProvider: RandomProvider = DefaultRandomProvider
+) {
+    @Volatile
+    var currentConfig: GlitchConfig = initialConfig
+        private set
+
+    private val epochMs = AtomicLong(timeProvider.nowMs())
+
+    private val forwardedUdp = AtomicLong(0)
+    private val droppedUdp = AtomicLong(0)
+    private val forwardedTcpBytes = AtomicLong(0)
+    private val delayedTcpWrites = AtomicLong(0)
+    private val throttledTcpEvents = AtomicLong(0)
+
+    fun updateConfig(newConfig: GlitchConfig) {
+        currentConfig = newConfig
     }
 
-    fun computeIpChecksum(buffer: ByteArray, offset: Int, length: Int): Short {
-        var sum = 0
-        var i = offset
-        val end = offset + length
-        while (i < end) {
-            if (i == offset + 10) {
-                i += 2
-                continue
+    fun resetMetrics() {
+        forwardedUdp.set(0)
+        droppedUdp.set(0)
+        forwardedTcpBytes.set(0)
+        delayedTcpWrites.set(0)
+        throttledTcpEvents.set(0)
+        epochMs.set(timeProvider.nowMs())
+    }
+
+    fun nowMs(): Long = timeProvider.nowMs()
+
+    fun isInBurstWindow(nowMs: Long = timeProvider.nowMs()): Boolean {
+        val cfg = currentConfig
+        if (!cfg.burstInterruptionEnabled || cfg.burstDurationMs <= 0) return false
+        val intervalMs = (cfg.burstIntervalSeconds.coerceAtLeast(1) * 1000L)
+            .coerceAtLeast(cfg.burstDurationMs.toLong())
+        val elapsed = (nowMs - epochMs.get()).coerceAtLeast(0L)
+        return (elapsed % intervalMs) < cfg.burstDurationMs.toLong()
+    }
+
+    fun directionApplies(configDir: ImpairmentDirection, trafficDir: TrafficDirection): Boolean {
+        return when (configDir) {
+            ImpairmentDirection.BOTH -> true
+            ImpairmentDirection.OUTGOING -> trafficDir == TrafficDirection.OUTGOING
+            ImpairmentDirection.INCOMING -> trafficDir == TrafficDirection.INCOMING
+        }
+    }
+
+    fun evaluateUdp(direction: TrafficDirection, isDns: Boolean): UdpImpairmentDecision {
+        val cfg = currentConfig
+        if (isDns || !directionApplies(cfg.direction, direction)) {
+            forwardedUdp.incrementAndGet()
+            return UdpImpairmentDecision.Forward(0L)
+        }
+
+        val now = timeProvider.nowMs()
+        if (isInBurstWindow(now)) {
+            droppedUdp.incrementAndGet()
+            return UdpImpairmentDecision.Drop
+        }
+
+        if (cfg.packetLossPercent > 0.0) {
+            if (cfg.packetLossPercent >= 100.0 ||
+                (randomProvider.nextDouble() * 100.0) < cfg.packetLossPercent
+            ) {
+                droppedUdp.incrementAndGet()
+                return UdpImpairmentDecision.Drop
             }
-            val word = ((buffer[i].toInt() and 0xFF) shl 8) or (buffer[i + 1].toInt() and 0xFF)
-            sum += word
-            i += 2
         }
-        while ((sum shr 16) > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        return (sum.inv() and 0xFFFF).toShort()
+
+        val delayMs = computeJitteredDelayMs(cfg)
+        forwardedUdp.incrementAndGet()
+        return UdpImpairmentDecision.Forward(delayMs)
     }
 
-    fun computeTcpChecksum(
-        srcIp: ByteArray,
-        dstIp: ByteArray,
-        packet: ByteArray,
-        tcpOffset: Int,
-        tcpLen: Int
-    ): Short {
-        var sum = 0
-        sum += (((srcIp[0].toInt() and 0xFF) shl 8) or (srcIp[1].toInt() and 0xFF))
-        sum += (((srcIp[2].toInt() and 0xFF) shl 8) or (srcIp[3].toInt() and 0xFF))
-        sum += (((dstIp[0].toInt() and 0xFF) shl 8) or (dstIp[1].toInt() and 0xFF))
-        sum += (((dstIp[2].toInt() and 0xFF) shl 8) or (dstIp[3].toInt() and 0xFF))
-        sum += 6
-        sum += tcpLen
-
-        var i = 0
-        while (i < tcpLen - 1) {
-            if (i == 16) {
-                i += 2
-                continue
-            }
-            val word = ((packet[tcpOffset + i].toInt() and 0xFF) shl 8) or (packet[tcpOffset + i + 1].toInt() and 0xFF)
-            sum += word
-            i += 2
-        }
-        if (i < tcpLen) {
-            sum += ((packet[tcpOffset + i].toInt() and 0xFF) shl 8)
-        }
-        while ((sum shr 16) > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val res = (sum.inv() and 0xFFFF).toShort()
-        return if (res == 0.toShort()) 0xFFFF.toShort() else res
+    fun recordUdpQueueDrop() {
+        droppedUdp.incrementAndGet()
     }
 
-    fun computeUdpChecksum(
-        srcIp: ByteArray,
-        dstIp: ByteArray,
-        packet: ByteArray,
-        udpOffset: Int,
-        udpLen: Int
-    ): Short {
-        var sum = 0
-        sum += (((srcIp[0].toInt() and 0xFF) shl 8) or (srcIp[1].toInt() and 0xFF))
-        sum += (((srcIp[2].toInt() and 0xFF) shl 8) or (srcIp[3].toInt() and 0xFF))
-        sum += (((dstIp[0].toInt() and 0xFF) shl 8) or (dstIp[1].toInt() and 0xFF))
-        sum += (((dstIp[2].toInt() and 0xFF) shl 8) or (dstIp[3].toInt() and 0xFF))
-        sum += 17
-        sum += udpLen
+    /**
+     * Computes a safe stream-preserving transmission schedule for an intact TCP chunk.
+     * Never drops bytes.
+     */
+    fun computeTcpWritePlan(
+        direction: TrafficDirection,
+        byteCount: Int,
+        nextAvailableTxMs: Long
+    ): TcpWritePlan {
+        val cfg = currentConfig
+        val now = timeProvider.nowMs()
+        if (!cfg.affectTcp || !directionApplies(cfg.direction, direction)) {
+            return TcpWritePlan(
+                releaseAtMs = now,
+                nextAvailableAtMs = now,
+                inBurstPause = false,
+                appliedDelay = false,
+                appliedThrottle = false
+            )
+        }
 
-        var i = 0
-        while (i < udpLen - 1) {
-            if (i == 6) {
-                i += 2
-                continue
-            }
-            val word = ((packet[udpOffset + i].toInt() and 0xFF) shl 8) or (packet[udpOffset + i + 1].toInt() and 0xFF)
-            sum += word
-            i += 2
+        if (isInBurstWindow(now)) {
+            return TcpWritePlan(
+                releaseAtMs = now,
+                nextAvailableAtMs = maxOf(now, nextAvailableTxMs),
+                inBurstPause = true,
+                appliedDelay = true,
+                appliedThrottle = false
+            )
         }
-        if (i < udpLen) {
-            sum += ((packet[udpOffset + i].toInt() and 0xFF) shl 8)
+
+        val latencyMs = computeJitteredDelayMs(cfg)
+        val bps = if (cfg.tcpBandwidthKbps > 0) cfg.tcpBandwidthKbps.toLong() * 1000L else 0L
+        val serializationMs = if (bps > 0L && byteCount > 0) {
+            ((byteCount.toLong() * 8_000L) / bps).coerceAtLeast(1L)
+        } else {
+            0L
         }
-        while ((sum shr 16) > 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
-        val res = (sum.inv() and 0xFFFF).toShort()
-        return if (res == 0.toShort()) 0xFFFF.toShort() else res
+
+        val targetStartMs = maxOf(now + latencyMs, nextAvailableTxMs)
+        val nextAvailMs = targetStartMs + serializationMs
+        val throttled = serializationMs > 0L || nextAvailableTxMs > (now + latencyMs)
+        val delayed = targetStartMs > now
+
+        return TcpWritePlan(
+            releaseAtMs = targetStartMs,
+            nextAvailableAtMs = nextAvailMs,
+            inBurstPause = false,
+            appliedDelay = delayed,
+            appliedThrottle = throttled
+        )
     }
 
-    fun computeIpv6TransportChecksum(
-        srcIp: ByteArray,
-        dstIp: ByteArray,
-        nextHeader: Int,
-        packet: ByteArray,
-        transportOffset: Int,
-        transportLen: Int,
-        checksumFieldOffset: Int
-    ): Short {
-        var sum = 0L
-        var i = 0
-        while (i < 16) {
-            sum += (((srcIp[i].toInt() and 0xFF) shl 8) or (srcIp[i + 1].toInt() and 0xFF))
-            i += 2
+    fun recordTcpWrite(byteCount: Int, appliedDelay: Boolean, appliedThrottle: Boolean) {
+        forwardedTcpBytes.addAndGet(byteCount.toLong())
+        if (appliedDelay) {
+            delayedTcpWrites.incrementAndGet()
         }
-        i = 0
-        while (i < 16) {
-            sum += (((dstIp[i].toInt() and 0xFF) shl 8) or (dstIp[i + 1].toInt() and 0xFF))
-            i += 2
+        if (appliedThrottle) {
+            throttledTcpEvents.incrementAndGet()
         }
-        sum += ((transportLen ushr 16) and 0xFFFF)
-        sum += (transportLen and 0xFFFF)
-        sum += nextHeader
-
-        i = 0
-        while (i < transportLen - 1) {
-            if (i == checksumFieldOffset) {
-                i += 2
-                continue
-            }
-            val word = ((packet[transportOffset + i].toInt() and 0xFF) shl 8) or (packet[transportOffset + i + 1].toInt() and 0xFF)
-            sum += word
-            i += 2
-        }
-        if (i < transportLen) {
-            sum += ((packet[transportOffset + i].toInt() and 0xFF) shl 8)
-        }
-        while ((sum ushr 16) > 0) {
-            sum = (sum and 0xFFFF) + (sum ushr 16)
-        }
-        val res = (sum.inv() and 0xFFFF).toInt().toShort()
-        return if (res == 0.toShort()) 0xFFFF.toShort() else res
     }
+
+    fun snapshotMetrics(): ImpairmentMetrics {
+        return ImpairmentMetrics(
+            forwardedUdpDatagrams = forwardedUdp.get(),
+            droppedUdpDatagrams = droppedUdp.get(),
+            forwardedTcpBytes = forwardedTcpBytes.get(),
+            delayedTcpWrites = delayedTcpWrites.get(),
+            throttledTcpEvents = throttledTcpEvents.get()
+        )
+    }
+
+    private fun computeJitteredDelayMs(cfg: GlitchConfig): Long {
+        if (cfg.baseLatencyMs <= 0 && cfg.randomJitterMs <= 0) return 0L
+        val jitter = if (cfg.randomJitterMs > 0) {
+            (randomProvider.nextSignedUnit() * cfg.randomJitterMs).toLong()
+        } else {
+            0L
+        }
+        return (cfg.baseLatencyMs.toLong() + jitter).coerceAtLeast(0L)
+    }
+}
+`
+  },
+  {
+    path: "app/src/main/java/com/callglitch/app/vpn/SocketProtector.kt",
+    language: "kotlin",
+    description: "Strict VpnService.protect() wrapper preventing outbound proxy routing loops",
+    content: `package com.callglitch.app.vpn
+
+import android.net.VpnService
+import java.io.IOException
+import java.net.DatagramSocket
+import java.net.Socket
+
+/**
+ * Abstraction over Android's VpnService.protect() so outbound proxy sockets
+ * bypass the VPN TUN interface (preventing routing loops) and can be
+ * deterministically tested in JVM unit tests.
+ */
+interface SocketProtector {
+    fun protect(socket: Socket): Boolean
+    fun protect(socket: DatagramSocket): Boolean
+}
+
+class SocketProtectionException(message: String) : IOException(message)
+
+class VpnServiceSocketProtector(
+    private val vpnService: VpnService
+) : SocketProtector {
+    override fun protect(socket: Socket): Boolean = vpnService.protect(socket)
+    override fun protect(socket: DatagramSocket): Boolean = vpnService.protect(socket)
 }
 `
   },
@@ -2500,8 +3015,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val isRunning by CallGlitchVpnService.isRunning.collectAsState()
                     val activeProfile by CallGlitchVpnService.activeProfile.collectAsState()
-                    val forwardedCount by CallGlitchVpnService.forwardedPackets.collectAsState()
-                    val droppedCount by CallGlitchVpnService.droppedPackets.collectAsState()
+                    val diagnostics by CallGlitchVpnService.diagnostics.collectAsState()
 
                     val savedProfile by settingsRepo.activeProfileFlow.collectAsState(initial = GlitchProfileType.MODERATE)
                     val customConfig by settingsRepo.customConfigFlow.collectAsState(initial = GlitchConfig())
@@ -2518,8 +3032,7 @@ class MainActivity : ComponentActivity() {
                         customConfig = customConfig,
                         selectedPackages = selectedPackages,
                         autoTimeout = autoTimeout,
-                        forwardedPackets = forwardedCount,
-                        droppedPackets = droppedCount,
+                        diagnostics = diagnostics,
                         appDiscoveryRepository = appDiscoveryRepo,
                         forceOpenAppDialog = triggerOpenAppDialog,
                         onAppDialogDismissed = { triggerOpenAppDialog = false },
@@ -2668,10 +3181,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.callglitch.app.data.AppDiscoveryRepository
+import com.callglitch.app.model.DiagnosticsSnapshot
 import com.callglitch.app.model.GlitchConfig
 import com.callglitch.app.model.GlitchProfileType
 import com.callglitch.app.model.ImpairmentDirection
 import com.callglitch.app.model.InstalledAppInfo
+import com.callglitch.app.model.VpnLifecycleState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -2683,8 +3198,7 @@ fun MainScreen(
     customConfig: GlitchConfig,
     selectedPackages: Set<String>,
     autoTimeout: Int,
-    forwardedPackets: Long,
-    droppedPackets: Long,
+    diagnostics: DiagnosticsSnapshot,
     appDiscoveryRepository: AppDiscoveryRepository,
     forceOpenAppDialog: Boolean = false,
     onAppDialogDismissed: () -> Unit = {},
@@ -2741,18 +3255,19 @@ fun MainScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // 1. Connection Status Card
+            // 1. Connection Status & Truthful Diagnostics Card
+            val hasFailure = diagnostics.vpnState == VpnLifecycleState.FAILED && diagnostics.lastError != null
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isRunning) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                    containerColor = if (isRunning || hasFailure) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
                     else if (selectedPackages.isEmpty()) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.12f)
                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ),
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
-                    if (isRunning) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+                    if (isRunning || hasFailure) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
                     else if (selectedPackages.isEmpty()) MaterialTheme.colorScheme.error.copy(alpha = 0.3f)
                     else MaterialTheme.colorScheme.outlineVariant
                 )
@@ -2766,21 +3281,38 @@ fun MainScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isRunning) "\${activeProfile.displayName} Impairment Active"
-                            else if (selectedPackages.isEmpty()) "No Target Apps Selected"
-                            else "Normal Network Traffic",
+                            text = when {
+                                hasFailure -> "Fault (\${diagnostics.lastErrorComponent ?: "VPN"})"
+                                diagnostics.vpnState == VpnLifecycleState.STARTING -> "Starting Hev Tunnel & Proxy..."
+                                diagnostics.vpnState == VpnLifecycleState.RECONFIGURING -> "Updating Target Apps..."
+                                isRunning -> "\${activeProfile.displayName} Impairment Active"
+                                selectedPackages.isEmpty() -> "No Target Apps Selected"
+                                else -> "Normal Network Traffic"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isRunning || selectedPackages.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                            color = if (isRunning || hasFailure || selectedPackages.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(4.dp))
+                        val forwardedKb = diagnostics.forwardedTcpBytes / 1024L
                         Text(
-                            text = if (isRunning) "$forwardedPackets forwarded · $droppedPackets dropped"
-                            else if (selectedPackages.isEmpty()) "Select at least 1 application below before starting"
-                            else "\${selectedPackages.size} target apps isolated · VPN Ready",
+                            text = when {
+                                hasFailure -> diagnostics.lastError ?: "Unexpected tunnel failure"
+                                isRunning -> "Tunnel: \${diagnostics.tunnelState.label} · Proxy 127.0.0.1:\${diagnostics.proxyPort} (\${diagnostics.activeTcpSessions} TCP / \${diagnostics.activeUdpSessions} UDP)"
+                                selectedPackages.isEmpty() -> "Select at least 1 application below before starting"
+                                else -> "\${selectedPackages.size} target apps isolated · Hev + SOCKS5 Ready"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (isRunning) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "UDP: \${diagnostics.forwardedUdpDatagrams} fwd / \${diagnostics.droppedUdpDatagrams} drop · TCP: \${forwardedKb} KB (\${diagnostics.delayedTcpWrites} paced)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
@@ -2790,9 +3322,11 @@ fun MainScreen(
                             .size(14.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isRunning) Color(0xFFEF4444)
-                                else if (selectedPackages.isEmpty()) Color(0xFFF59E0B)
-                                else Color(0xFF10B981)
+                                when {
+                                    isRunning || hasFailure -> Color(0xFFEF4444)
+                                    selectedPackages.isEmpty() -> Color(0xFFF59E0B)
+                                    else -> Color(0xFF10B981)
+                                }
                             )
                     )
                 }
@@ -3107,11 +3641,23 @@ fun MainScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Impair TCP Traffic", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            Text("Disabled by default to avoid breaking call signaling/TLS", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Applies safe latency, jitter, pacing, and pauses without corrupting bytes", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = customConfig.affectTcp,
                             onCheckedChange = { onUpdateCustomConfig(customConfig.copy(affectTcp = it)) }
+                        )
+                    }
+
+                    if (customConfig.affectTcp) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val bwLabel = if (customConfig.tcpBandwidthKbps <= 0) "Uncapped (delay/jitter only)" else "\${customConfig.tcpBandwidthKbps} Kbps"
+                        Text("TCP Bandwidth Pace: $bwLabel", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Slider(
+                            value = customConfig.tcpBandwidthKbps.toFloat(),
+                            onValueChange = { onUpdateCustomConfig(customConfig.copy(tcpBandwidthKbps = it.toInt())) },
+                            valueRange = 0f..2000f,
+                            steps = 39
                         )
                     }
                 }
@@ -3527,7 +4073,7 @@ fun CallGlitchTheme(
   {
     path: "app/src/test/java/com/callglitch/app/GlitchConfigTest.kt",
     language: "kotlin",
-    description: "Unit tests verifying profile configuration parameters, jitter ranges, and timeout settings",
+    description: "Unit tests verifying profile configuration parameters, TCP pacing, and timeout settings",
     content: `package com.callglitch.app
 
 import com.callglitch.app.model.GlitchConfig
@@ -3547,7 +4093,8 @@ class GlitchConfigTest {
         assertEquals(10.0, mild.packetLossPercent, 0.001)
         assertFalse(mild.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, mild.direction)
-        assertFalse(mild.affectTcp)
+        assertTrue(mild.affectTcp)
+        assertEquals(1200, mild.tcpBandwidthKbps)
     }
 
     @Test
@@ -3559,7 +4106,8 @@ class GlitchConfigTest {
         assertEquals(35.0, moderate.packetLossPercent, 0.001)
         assertFalse(moderate.burstInterruptionEnabled)
         assertEquals(ImpairmentDirection.BOTH, moderate.direction)
-        assertFalse(moderate.affectTcp)
+        assertTrue(moderate.affectTcp)
+        assertEquals(384, moderate.tcpBandwidthKbps)
     }
 
     @Test
@@ -3573,7 +4121,8 @@ class GlitchConfigTest {
         assertEquals(2500, severe.burstDurationMs)
         assertEquals(6, severe.burstIntervalSeconds)
         assertEquals(ImpairmentDirection.BOTH, severe.direction)
-        assertFalse(severe.affectTcp)
+        assertTrue(severe.affectTcp)
+        assertEquals(64, severe.tcpBandwidthKbps)
     }
 
     @Test
@@ -3584,7 +4133,8 @@ class GlitchConfigTest {
             randomJitterMs = 120,
             packetLossPercent = 12.0,
             direction = ImpairmentDirection.OUTGOING,
-            affectTcp = true
+            affectTcp = true,
+            tcpBandwidthKbps = 256
         )
 
         val resolved = GlitchConfig.forType(GlitchProfileType.CUSTOM, customFallback)
@@ -3594,6 +4144,7 @@ class GlitchConfigTest {
         assertEquals(12.0, resolved.packetLossPercent, 0.001)
         assertEquals(ImpairmentDirection.OUTGOING, resolved.direction)
         assertTrue(resolved.affectTcp)
+        assertEquals(256, resolved.tcpBandwidthKbps)
     }
 }
 `
@@ -3663,6 +4214,961 @@ class AppDiscoveryAndSelectionTest {
         assertEquals("discord", sorted[1].appName)
         assertEquals("WhatsApp", sorted[2].appName)
         assertEquals("zoom", sorted[3].appName)
+    }
+}
+`
+  },
+  {
+    path: "app/src/test/java/com/callglitch/app/ImpairmentControllerTest.kt",
+    language: "kotlin",
+    description: "Deterministic tests for UDP loss, burst cycles, DNS exemption, and TCP pacing",
+    content: `package com.callglitch.app
+
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.ImpairmentDirection
+import com.callglitch.app.vpn.ImpairmentController
+import com.callglitch.app.vpn.RandomProvider
+import com.callglitch.app.vpn.TimeProvider
+import com.callglitch.app.vpn.TrafficDirection
+import com.callglitch.app.vpn.UdpImpairmentDecision
+import org.junit.Assert.*
+import org.junit.Test
+
+class ImpairmentControllerTest {
+
+    private class FakeClock(var now: Long = 1000L) : TimeProvider {
+        override fun nowMs(): Long = now
+    }
+
+    private class SequenceRandom(
+        private val doubles: List<Double>,
+        private val signed: List<Double> = listOf(0.0)
+    ) : RandomProvider {
+        private var dIdx = 0
+        private var sIdx = 0
+
+        override fun nextDouble(): Double {
+            val v = doubles[dIdx % doubles.size]
+            dIdx++
+            return v
+        }
+
+        override fun nextSignedUnit(): Double {
+            val v = signed[sIdx % signed.size]
+            sIdx++
+            return v
+        }
+    }
+
+    @Test
+    fun testDeterministicUdpPacketLossAndLatency() {
+        val clock = FakeClock(10_000L)
+        // Loss = 30%. Sequence: 0.10 (drop), 0.50 (fwd), 0.29 (drop), 0.30 (fwd)
+        val rng = SequenceRandom(
+            doubles = listOf(0.10, 0.50, 0.29, 0.30),
+            signed = listOf(0.5, -0.5)
+        )
+        val cfg = GlitchConfig(
+            profileType = GlitchProfileType.CUSTOM,
+            baseLatencyMs = 200,
+            randomJitterMs = 40,
+            packetLossPercent = 30.0,
+            burstInterruptionEnabled = false
+        )
+        val controller = ImpairmentController(cfg, clock, rng)
+
+        assertEquals(UdpImpairmentDecision.Drop, controller.evaluateUdp(TrafficDirection.OUTGOING, isDns = false))
+        assertEquals(UdpImpairmentDecision.Forward(220L), controller.evaluateUdp(TrafficDirection.OUTGOING, isDns = false))
+        assertEquals(UdpImpairmentDecision.Drop, controller.evaluateUdp(TrafficDirection.INCOMING, isDns = false))
+        assertEquals(UdpImpairmentDecision.Forward(180L), controller.evaluateUdp(TrafficDirection.INCOMING, isDns = false))
+
+        val stats = controller.snapshotMetrics()
+        assertEquals(2L, stats.droppedUdpDatagrams)
+        assertEquals(2L, stats.forwardedUdpDatagrams)
+    }
+
+    @Test
+    fun testBurstLossAndRecoveryPeriods() {
+        val clock = FakeClock(0L)
+        val rng = SequenceRandom(doubles = listOf(0.99), signed = listOf(0.0))
+        val cfg = GlitchConfig(
+            profileType = GlitchProfileType.CUSTOM,
+            baseLatencyMs = 100,
+            randomJitterMs = 0,
+            packetLossPercent = 0.0,
+            burstInterruptionEnabled = true,
+            burstDurationMs = 2000,
+            burstIntervalSeconds = 5
+        )
+        val controller = ImpairmentController(cfg, clock, rng)
+
+        // [0..1999] -> burst cut active
+        clock.now = 500L
+        assertTrue(controller.isInBurstWindow())
+        assertEquals(UdpImpairmentDecision.Drop, controller.evaluateUdp(TrafficDirection.OUTGOING, isDns = false))
+
+        // [2000..4999] -> recovery window
+        clock.now = 2500L
+        assertFalse(controller.isInBurstWindow())
+        assertEquals(UdpImpairmentDecision.Forward(100L), controller.evaluateUdp(TrafficDirection.OUTGOING, isDns = false))
+
+        // [5000..6999] -> next burst cycle
+        clock.now = 5500L
+        assertTrue(controller.isInBurstWindow())
+        assertEquals(UdpImpairmentDecision.Drop, controller.evaluateUdp(TrafficDirection.INCOMING, isDns = false))
+    }
+
+    @Test
+    fun testDnsExemptionAndDirectionFiltering() {
+        val clock = FakeClock(0L)
+        val rng = SequenceRandom(doubles = listOf(0.0), signed = listOf(1.0))
+        val cfg = GlitchConfig(
+            profileType = GlitchProfileType.CUSTOM,
+            baseLatencyMs = 1500,
+            randomJitterMs = 500,
+            packetLossPercent = 100.0,
+            burstInterruptionEnabled = true,
+            direction = ImpairmentDirection.INCOMING
+        )
+        val controller = ImpairmentController(cfg, clock, rng)
+
+        // DNS is always forwarded with 0ms even under 100% loss & burst
+        assertEquals(UdpImpairmentDecision.Forward(0L), controller.evaluateUdp(TrafficDirection.INCOMING, isDns = true))
+        // Outgoing bypassed when direction == INCOMING
+        assertEquals(UdpImpairmentDecision.Forward(0L), controller.evaluateUdp(TrafficDirection.OUTGOING, isDns = false))
+        // Incoming impaired
+        assertEquals(UdpImpairmentDecision.Drop, controller.evaluateUdp(TrafficDirection.INCOMING, isDns = false))
+    }
+
+    @Test
+    fun testTcpImpairmentPlanLatencyPacingAndBurstPause() {
+        val clock = FakeClock(1_000L)
+        val rng = SequenceRandom(doubles = listOf(0.9), signed = listOf(0.0))
+        val cfg = GlitchConfig(
+            profileType = GlitchProfileType.CUSTOM,
+            baseLatencyMs = 100,
+            randomJitterMs = 0,
+            packetLossPercent = 50.0,
+            burstInterruptionEnabled = true,
+            burstDurationMs = 1000,
+            burstIntervalSeconds = 5,
+            affectTcp = true,
+            tcpBandwidthKbps = 800 // 100 bytes/ms -> 1000 bytes = 10ms
+        )
+        val controller = ImpairmentController(cfg, clock, rng)
+
+        // During burst [1000..1999], TCP signals safe temporary pause (no drops)
+        val burstPlan = controller.computeTcpWritePlan(TrafficDirection.OUTGOING, 1000, clock.now)
+        assertTrue(burstPlan.inBurstPause)
+
+        // During recovery [2000..5999], computes latency + bandwidth serialization
+        clock.now = 2500L
+        val plan1 = controller.computeTcpWritePlan(TrafficDirection.OUTGOING, 1000, clock.now)
+        assertFalse(plan1.inBurstPause)
+        assertTrue(plan1.appliedDelay)
+        assertTrue(plan1.appliedThrottle)
+        assertEquals(2600L, plan1.releaseAtMs) // now + 100ms
+        assertEquals(2610L, plan1.nextAvailableAtMs) // + 10ms for 1000B @ 800Kbps
+
+        // Immediate second chunk paces cleanly behind plan1.nextAvailableAtMs
+        val plan2 = controller.computeTcpWritePlan(TrafficDirection.OUTGOING, 1000, plan1.nextAvailableAtMs)
+        assertEquals(2610L, plan2.releaseAtMs)
+        assertEquals(2620L, plan2.nextAvailableAtMs)
+    }
+}
+`
+  },
+  {
+    path: "app/src/test/java/com/callglitch/app/LocalSocks5ProxyServerTest.kt",
+    language: "kotlin",
+    description: "Integration tests for RFC 1928 TCP/UDP proxying, IPv4/IPv6, byte integrity, and protect() failures",
+    content: `package com.callglitch.app
+
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.vpn.ImpairmentController
+import com.callglitch.app.vpn.LocalSocks5ProxyServer
+import com.callglitch.app.vpn.RandomProvider
+import com.callglitch.app.vpn.SocketProtector
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketException
+import java.security.MessageDigest
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+
+class LocalSocks5ProxyServerTest {
+
+    private class RecordingSocketProtector(
+        private val allowProtect: Boolean = true
+    ) : SocketProtector {
+        val tcpProtectCalls = AtomicInteger(0)
+        val udpProtectCalls = AtomicInteger(0)
+
+        override fun protect(socket: Socket): Boolean {
+            tcpProtectCalls.incrementAndGet()
+            return allowProtect
+        }
+
+        override fun protect(socket: DatagramSocket): Boolean {
+            udpProtectCalls.incrementAndGet()
+            return allowProtect
+        }
+    }
+
+    private class DeterministicRandom(private val value: Double = 0.99) : RandomProvider {
+        override fun nextDouble(): Double = value
+        override fun nextSignedUnit(): Double = 0.0
+    }
+
+    @Test
+    fun testSocks5TcpConnectIpv4AndDomainAndProtectsSocket() {
+        val echoServer = startTcpEchoServer(InetAddress.getByName("127.0.0.1"))
+        val protector = RecordingSocketProtector(allowProtect = true)
+        val impairment = ImpairmentController(
+            GlitchConfig(
+                profileType = GlitchProfileType.CUSTOM,
+                baseLatencyMs = 0,
+                randomJitterMs = 0,
+                packetLossPercent = 0.0,
+                affectTcp = false
+            )
+        )
+        val proxy = LocalSocks5ProxyServer(impairment, protector)
+        try {
+            val port = proxy.start()
+            assertTrue(proxy.isRunning)
+            assertTrue(port > 0)
+
+            // 1. IPv4 CONNECT
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendConnectIpv4(out, byteArrayOf(127, 0, 0, 1), echoServer.localPort)
+                readSocksReply(inp)
+
+                val payload = "hello-ipv4-socks5".toByteArray()
+                out.write(payload)
+                out.flush()
+                val echoed = ByteArray(payload.size)
+                inp.readFully(echoed)
+                assertArrayEquals(payload, echoed)
+            }
+
+            // 2. Domain name ("localhost") CONNECT
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendConnectDomain(out, "localhost", echoServer.localPort)
+                readSocksReply(inp)
+
+                val payload = "hello-domain-socks5".toByteArray()
+                out.write(payload)
+                out.flush()
+                val echoed = ByteArray(payload.size)
+                inp.readFully(echoed)
+                assertArrayEquals(payload, echoed)
+            }
+
+            assertTrue(protector.tcpProtectCalls.get() >= 2)
+        } finally {
+            proxy.stop()
+            echoServer.close()
+        }
+    }
+
+    @Test
+    fun testSocks5TcpConnectIpv6WhenSupported() {
+        val ipv6Loopback = InetAddress.getByName("::1")
+        val echoServer = try {
+            startTcpEchoServer(ipv6Loopback)
+        } catch (_: Exception) {
+            return // Host environment does not have IPv6 loopback enabled
+        }
+        val protector = RecordingSocketProtector(allowProtect = true)
+        val impairment = ImpairmentController(
+            GlitchConfig(baseLatencyMs = 0, randomJitterMs = 0, packetLossPercent = 0.0, affectTcp = false)
+        )
+        val proxy = LocalSocks5ProxyServer(impairment, protector)
+        try {
+            val port = proxy.start()
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendConnectIpv6(out, ipv6Loopback.address, echoServer.localPort)
+                val rep = readSocksReply(inp)
+                assertEquals(0, rep)
+
+                val payload = "hello-ipv6-socks5".toByteArray()
+                out.write(payload)
+                out.flush()
+                val echoed = ByteArray(payload.size)
+                inp.readFully(echoed)
+                assertArrayEquals(payload, echoed)
+            }
+            assertTrue(protector.tcpProtectCalls.get() >= 1)
+        } finally {
+            proxy.stop()
+            echoServer.close()
+        }
+    }
+
+    @Test
+    fun testSocks5UdpAssociateIpv4LossLatencyAndIntactDatagrams() {
+        val udpEcho = startUdpEchoServer(InetAddress.getByName("127.0.0.1"))
+        val protector = RecordingSocketProtector(allowProtect = true)
+        // Alternate 0.1 (< 50% -> drop) and 0.9 (>= 50% -> forward)
+        var toggle = 0
+        val alternatingRng = object : RandomProvider {
+            override fun nextDouble(): Double {
+                toggle++
+                return if (toggle % 2 == 1) 0.1 else 0.9
+            }
+            override fun nextSignedUnit(): Double = 0.0
+        }
+        val impairment = ImpairmentController(
+            initialConfig = GlitchConfig(
+                baseLatencyMs = 40,
+                randomJitterMs = 0,
+                packetLossPercent = 50.0,
+                burstInterruptionEnabled = false
+            ),
+            randomProvider = alternatingRng
+        )
+        val proxy = LocalSocks5ProxyServer(impairment, protector)
+        try {
+            val port = proxy.start()
+            Socket("127.0.0.1", port).use { ctrl ->
+                val out = ctrl.getOutputStream()
+                val inp = DataInputStream(ctrl.getInputStream())
+                socks5Handshake(out, inp)
+                sendUdpAssociate(out)
+                val (rep, relayPort) = readSocksReplyWithPort(inp)
+                assertEquals(0, rep)
+                assertTrue(relayPort > 0)
+
+                DatagramSocket(0, InetAddress.getByName("127.0.0.1")).use { clientUdp ->
+                    clientUdp.soTimeout = 1500
+                    val payloads = (1..6).map { "rtp-frame-$it-intact-payload".toByteArray() }
+                    for (p in payloads) {
+                        val frame = encodeUdpFrameIpv4(byteArrayOf(127, 0, 0, 1), udpEcho.localPort, p)
+                        clientUdp.send(DatagramPacket(frame, frame.size, InetAddress.getByName("127.0.0.1"), relayPort))
+                    }
+
+                    val received = mutableListOf<String>()
+                    val recvBuf = ByteArray(4096)
+                    val pkt = DatagramPacket(recvBuf, recvBuf.size)
+                    while (true) {
+                        try {
+                            clientUdp.receive(pkt)
+                            val body = decodeUdpFramePayload(recvBuf, pkt.length)
+                            received.add(String(body))
+                        } catch (_: Exception) {
+                            break
+                        }
+                    }
+
+                    // Verify partial loss happened AND every surviving datagram is 100% intact (never corrupted)
+                    assertTrue("Expected some UDP datagrams dropped", received.size < payloads.size)
+                    assertTrue("Expected some UDP datagrams forwarded", received.isNotEmpty())
+                    for (item in received) {
+                        assertTrue("Datagram payload corrupted: $item", item.startsWith("rtp-frame-") && item.endsWith("-intact-payload"))
+                    }
+                }
+            }
+            assertTrue(protector.udpProtectCalls.get() >= 1)
+        } finally {
+            proxy.stop()
+            udpEcho.close()
+        }
+    }
+
+    @Test
+    fun testSocks5UdpAssociateIpv6WhenSupported() {
+        val ipv6Loopback = InetAddress.getByName("::1")
+        val udpEcho = try {
+            startUdpEchoServer(ipv6Loopback)
+        } catch (_: Exception) {
+            return // Host lacks IPv6 loopback interface
+        }
+        val protector = RecordingSocketProtector(allowProtect = true)
+        val impairment = ImpairmentController(
+            GlitchConfig(baseLatencyMs = 15, randomJitterMs = 0, packetLossPercent = 0.0, affectTcp = false)
+        )
+        val proxy = LocalSocks5ProxyServer(impairment, protector)
+        try {
+            val port = proxy.start()
+            Socket("127.0.0.1", port).use { ctrl ->
+                val out = ctrl.getOutputStream()
+                val inp = DataInputStream(ctrl.getInputStream())
+                socks5Handshake(out, inp)
+                sendUdpAssociate(out)
+                val (rep, relayPort) = readSocksReplyWithPort(inp)
+                assertEquals(0, rep)
+                assertTrue(relayPort > 0)
+
+                DatagramSocket(0, InetAddress.getByName("127.0.0.1")).use { clientUdp ->
+                    clientUdp.soTimeout = 1500
+                    val payload = "hello-ipv6-udp-rtp".toByteArray()
+                    val frame = ByteArrayOutputStream().apply {
+                        write(0); write(0); write(0); write(0x04)
+                        write(ipv6Loopback.address)
+                        write((udpEcho.localPort ushr 8) and 0xFF); write(udpEcho.localPort and 0xFF)
+                        write(payload)
+                    }.toByteArray()
+                    clientUdp.send(DatagramPacket(frame, frame.size, InetAddress.getByName("127.0.0.1"), relayPort))
+
+                    val recvBuf = ByteArray(4096)
+                    val pkt = DatagramPacket(recvBuf, recvBuf.size)
+                    try {
+                        clientUdp.receive(pkt)
+                        val body = decodeUdpFramePayload(recvBuf, pkt.length)
+                        assertArrayEquals(payload, body)
+                    } catch (_: SocketException) {
+                        // Ignore if host JVM runs with IPv4-only outbound stack
+                    }
+                }
+            }
+        } finally {
+            proxy.stop()
+            udpEcho.close()
+        }
+    }
+
+    @Test
+    fun testTcpImpairmentThrottlingNeverCorruptsBytes() {
+        val echoServer = startTcpEchoServer(InetAddress.getByName("127.0.0.1"))
+        val protector = RecordingSocketProtector(allowProtect = true)
+        val impairment = ImpairmentController(
+            GlitchConfig(
+                profileType = GlitchProfileType.CUSTOM,
+                baseLatencyMs = 60,
+                randomJitterMs = 10,
+                packetLossPercent = 80.0, // Must NOT drop TCP bytes!
+                affectTcp = true,
+                tcpBandwidthKbps = 640 // ~80 KB/s -> 24KB takes >= 240ms + latency
+            ),
+            randomProvider = DeterministicRandom(0.0)
+        )
+        val proxy = LocalSocks5ProxyServer(impairment, protector)
+        try {
+            val port = proxy.start()
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendConnectIpv4(out, byteArrayOf(127, 0, 0, 1), echoServer.localPort)
+                assertEquals(0, readSocksReply(inp))
+
+                val data = ByteArray(24 * 1024) { i -> ((i * 31 + 7) and 0xFF).toByte() }
+                val startNs = System.nanoTime()
+                out.write(data)
+                out.flush()
+                sock.shutdownOutput()
+
+                val received = ByteArray(data.size)
+                inp.readFully(received)
+                val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+
+                assertArrayEquals("TCP stream bytes must never be dropped or corrupted", data, received)
+                assertTrue("Expected measurable TCP delay/throttling (>= 150ms), got \${elapsedMs}ms", elapsedMs >= 150L)
+            }
+        } finally {
+            proxy.stop()
+            echoServer.close()
+        }
+    }
+
+    @Test
+    fun testProtectFailureAbortsTcpAndUdpCleanly() {
+        val errors = CopyOnWriteArrayList<Pair<String, String>>()
+        val protector = RecordingSocketProtector(allowProtect = false)
+        val impairment = ImpairmentController(GlitchConfig())
+        val proxy = LocalSocks5ProxyServer(
+            impairmentController = impairment,
+            socketProtector = protector,
+            onError = { comp, msg -> errors.add(comp to msg) }
+        )
+        try {
+            val port = proxy.start()
+
+            // TCP CONNECT should fail cleanly when protect() returns false
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendConnectIpv4(out, byteArrayOf(127, 0, 0, 1), 65432)
+                val rep = readSocksReply(inp)
+                assertNotEquals(0, rep)
+            }
+
+            // UDP ASSOCIATE should fail cleanly when protect() returns false
+            Socket("127.0.0.1", port).use { sock ->
+                val out = sock.getOutputStream()
+                val inp = DataInputStream(sock.getInputStream())
+                socks5Handshake(out, inp)
+                sendUdpAssociate(out)
+                val rep = readSocksReply(inp)
+                assertNotEquals(0, rep)
+            }
+
+            assertEquals(1, protector.tcpProtectCalls.get())
+            assertEquals(1, protector.udpProtectCalls.get())
+            assertTrue(errors.any { it.first == "SocketProtector" })
+        } finally {
+            proxy.stop()
+        }
+    }
+
+    private fun startTcpEchoServer(bindAddr: InetAddress): ServerSocket {
+        val server = ServerSocket(0, 50, bindAddr)
+        thread(isDaemon = true) {
+            while (!server.isClosed) {
+                try {
+                    val client = server.accept()
+                    thread(isDaemon = true) {
+                        client.use { s ->
+                            val buf = ByteArray(8192)
+                            val ins = s.getInputStream()
+                            val outs = s.getOutputStream()
+                            while (true) {
+                                val r = ins.read(buf)
+                                if (r < 0) break
+                                outs.write(buf, 0, r)
+                                outs.flush()
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    break
+                }
+            }
+        }
+        return server
+    }
+
+    private fun startUdpEchoServer(bindAddr: InetAddress): DatagramSocket {
+        val sock = DatagramSocket(0, bindAddr)
+        thread(isDaemon = true) {
+            val buf = ByteArray(65535)
+            val pkt = DatagramPacket(buf, buf.size)
+            while (!sock.isClosed) {
+                try {
+                    pkt.length = buf.size
+                    sock.receive(pkt)
+                    sock.send(DatagramPacket(buf.copyOf(pkt.length), pkt.length, pkt.address, pkt.port))
+                } catch (_: Exception) {
+                    break
+                }
+            }
+        }
+        return sock
+    }
+
+    private fun socks5Handshake(out: java.io.OutputStream, inp: DataInputStream) {
+        out.write(byteArrayOf(0x05, 0x01, 0x00))
+        out.flush()
+        val resp = ByteArray(2)
+        inp.readFully(resp)
+        assertEquals(0x05, resp[0].toInt() and 0xFF)
+        assertEquals(0x00, resp[1].toInt() and 0xFF)
+    }
+
+    private fun sendConnectIpv4(out: java.io.OutputStream, ip4: ByteArray, port: Int) {
+        val req = ByteArrayOutputStream().apply {
+            write(0x05); write(0x01); write(0x00); write(0x01)
+            write(ip4)
+            write((port ushr 8) and 0xFF); write(port and 0xFF)
+        }.toByteArray()
+        out.write(req)
+        out.flush()
+    }
+
+    private fun sendConnectIpv6(out: java.io.OutputStream, ip6: ByteArray, port: Int) {
+        val req = ByteArrayOutputStream().apply {
+            write(0x05); write(0x01); write(0x00); write(0x04)
+            write(ip6)
+            write((port ushr 8) and 0xFF); write(port and 0xFF)
+        }.toByteArray()
+        out.write(req)
+        out.flush()
+    }
+
+    private fun sendConnectDomain(out: java.io.OutputStream, domain: String, port: Int) {
+        val bytes = domain.toByteArray(Charsets.UTF_8)
+        val req = ByteArrayOutputStream().apply {
+            write(0x05); write(0x01); write(0x00); write(0x03)
+            write(bytes.size); write(bytes)
+            write((port ushr 8) and 0xFF); write(port and 0xFF)
+        }.toByteArray()
+        out.write(req)
+        out.flush()
+    }
+
+    private fun sendUdpAssociate(out: java.io.OutputStream) {
+        out.write(byteArrayOf(0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+        out.flush()
+    }
+
+    private fun readSocksReply(inp: DataInputStream): Int {
+        return readSocksReplyWithPort(inp).first
+    }
+
+    private fun readSocksReplyWithPort(inp: DataInputStream): Pair<Int, Int> {
+        val head = ByteArray(4)
+        inp.readFully(head)
+        val rep = head[1].toInt() and 0xFF
+        val atyp = head[3].toInt() and 0xFF
+        val addrLen = when (atyp) {
+            0x01 -> 4
+            0x04 -> 16
+            0x03 -> inp.readUnsignedByte()
+            else -> 0
+        }
+        if (addrLen > 0) inp.readFully(ByteArray(addrLen))
+        val port = inp.readUnsignedShort()
+        return rep to port
+    }
+
+    private fun encodeUdpFrameIpv4(ip4: ByteArray, port: Int, payload: ByteArray): ByteArray {
+        return ByteArrayOutputStream().apply {
+            write(0); write(0); write(0); write(0x01)
+            write(ip4)
+            write((port ushr 8) and 0xFF); write(port and 0xFF)
+            write(payload)
+        }.toByteArray()
+    }
+
+    private fun decodeUdpFramePayload(data: ByteArray, length: Int): ByteArray {
+        val atyp = data[3].toInt() and 0xFF
+        val addrLen = when (atyp) {
+            0x01 -> 4
+            0x04 -> 16
+            0x03 -> 1 + (data[4].toInt() and 0xFF)
+            else -> 0
+        }
+        val headerEnd = 4 + addrLen + 2
+        return data.copyOfRange(headerEnd, length)
+    }
+}
+`
+  },
+  {
+    path: "app/src/test/java/com/callglitch/app/VpnSessionControllerLifecycleTest.kt",
+    language: "kotlin",
+    description: "Lifecycle tests for 25 start/stop cycles, partial startup rollback, and crash recovery",
+    content: `package com.callglitch.app
+
+import com.callglitch.app.model.ComponentHealthState
+import com.callglitch.app.model.GlitchConfig
+import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.VpnLifecycleState
+import com.callglitch.app.vpn.SocketProtector
+import com.callglitch.app.vpn.TunHandle
+import com.callglitch.app.vpn.TunInterfaceProvider
+import com.callglitch.app.vpn.TunnelConfig
+import com.callglitch.app.vpn.TunnelEngine
+import com.callglitch.app.vpn.TunnelStats
+import com.callglitch.app.vpn.VpnSessionController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.File
+import java.io.IOException
+import java.net.DatagramSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicInteger
+
+class VpnSessionControllerLifecycleTest {
+
+    private class FakeTunHandle(override val fd: Int) : TunHandle {
+        val closeCount = AtomicInteger(0)
+        override fun close() {
+            closeCount.incrementAndGet()
+        }
+    }
+
+    private class FakeTunProvider(
+        private val shouldFail: Boolean = false
+    ) : TunInterfaceProvider {
+        val createdHandles = mutableListOf<FakeTunHandle>()
+        private var nextFd = 100
+
+        override fun establish(selectedApps: Set<String>, config: GlitchConfig): TunHandle {
+            if (shouldFail) throw IOException("Mock VpnService.Builder.establish() returned null")
+            return FakeTunHandle(nextFd++).also { createdHandles.add(it) }
+        }
+    }
+
+    private class FakeTunnelEngine(
+        var failOnStart: Boolean = false,
+        var dieImmediatelyAfterStart: Boolean = false
+    ) : TunnelEngine {
+        var running = false
+        var startCalls = 0
+        var stopCalls = 0
+        var lastConfig: TunnelConfig? = null
+
+        override fun start(config: TunnelConfig): Boolean {
+            startCalls++
+            lastConfig = config
+            if (failOnStart) {
+                running = false
+                return false
+            }
+            running = !dieImmediatelyAfterStart
+            return true
+        }
+
+        override fun stop(): Boolean {
+            stopCalls++
+            running = false
+            return true
+        }
+
+        override fun isRunning(): Boolean = running
+
+        override fun getStats(): TunnelStats = TunnelStats(10, 1024, 12, 2048)
+    }
+
+    private val allowAllProtector = object : SocketProtector {
+        override fun protect(socket: Socket): Boolean = true
+        override fun protect(socket: DatagramSocket): Boolean = true
+    }
+
+    @Test
+    fun testRepeatedStartStopCyclesAndSingleTunFdClose() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider()
+        val tunnelEngine = FakeTunnelEngine()
+        val confPath = File.createTempFile("hev-test-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            val apps = setOf("com.whatsapp", "com.chamet")
+            repeat(25) { cycle ->
+                val res = controller.start(apps, GlitchConfig.MODERATE)
+                assertTrue("Cycle $cycle failed to start: \${res.exceptionOrNull()}", res.isSuccess)
+                assertEquals(VpnLifecycleState.RUNNING, controller.diagnostics.value.vpnState)
+                assertEquals(ComponentHealthState.RUNNING, controller.diagnostics.value.tunnelState)
+                assertEquals(ComponentHealthState.RUNNING, controller.diagnostics.value.proxyState)
+                assertTrue(controller.diagnostics.value.proxyPort > 0)
+
+                controller.stop()
+                // Calling stop() a second time must be idempotent
+                controller.stop()
+
+                assertEquals(VpnLifecycleState.STOPPED, controller.diagnostics.value.vpnState)
+                assertFalse(tunnelEngine.isRunning())
+            }
+
+            assertEquals(25, tunProvider.createdHandles.size)
+            tunProvider.createdHandles.forEachIndexed { idx, handle ->
+                assertEquals("Handle $idx must be closed exactly once", 1, handle.closeCount.get())
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun testPartialStartupRollbackWhenTunnelFails() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider()
+        val tunnelEngine = FakeTunnelEngine(failOnStart = true)
+        val confPath = File.createTempFile("hev-fail-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            val res = controller.start(setOf("com.whatsapp"), GlitchConfig.SEVERE)
+            assertTrue(res.isFailure)
+            assertEquals(VpnLifecycleState.FAILED, controller.diagnostics.value.vpnState)
+            assertEquals("HevSocks5Tunnel", controller.diagnostics.value.lastErrorComponent)
+            assertEquals(0, controller.diagnostics.value.proxyPort)
+            assertEquals(1, tunProvider.createdHandles.size)
+            assertEquals(1, tunProvider.createdHandles.first().closeCount.get())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun testPartialStartupWhenProxyBindFails() = runBlocking {
+        val occupiedSocket = java.net.ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider()
+        val tunnelEngine = FakeTunnelEngine()
+        val confPath = File.createTempFile("hev-proxyfail-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            requestedProxyPort = occupiedSocket.localPort,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            val res = controller.start(setOf("com.whatsapp"), GlitchConfig.MILD)
+            assertTrue(res.isFailure)
+            assertEquals(VpnLifecycleState.FAILED, controller.diagnostics.value.vpnState)
+            assertEquals("LocalSocks5Proxy", controller.diagnostics.value.lastErrorComponent)
+            assertEquals(0, tunProvider.createdHandles.size)
+            assertEquals(0, tunnelEngine.startCalls)
+            assertEquals(0, controller.diagnostics.value.proxyPort)
+        } finally {
+            occupiedSocket.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun testPartialStartupRollbackWhenTunEstablishFails() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider(shouldFail = true)
+        val tunnelEngine = FakeTunnelEngine()
+        val confPath = File.createTempFile("hev-tunfail-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            val res = controller.start(setOf("com.whatsapp"), GlitchConfig.MILD)
+            assertTrue(res.isFailure)
+            assertEquals(VpnLifecycleState.FAILED, controller.diagnostics.value.vpnState)
+            assertEquals("VpnInterface", controller.diagnostics.value.lastErrorComponent)
+            assertEquals(0, tunnelEngine.startCalls)
+            assertEquals(0, controller.diagnostics.value.proxyPort)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun testUnexpectedTunnelTerminationTriggersCleanTeardown() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider()
+        val tunnelEngine = FakeTunnelEngine()
+        val confPath = File.createTempFile("hev-crash-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            assertTrue(controller.start(setOf("com.whatsapp"), GlitchConfig.MODERATE).isSuccess)
+            assertEquals(VpnLifecycleState.RUNNING, controller.diagnostics.value.vpnState)
+
+            // Simulate sudden native Hev worker crash
+            tunnelEngine.running = false
+            controller.checkHealthNow()
+
+            assertEquals(VpnLifecycleState.FAILED, controller.diagnostics.value.vpnState)
+            assertEquals("HevSocks5Tunnel", controller.diagnostics.value.lastErrorComponent)
+            assertEquals(1, tunProvider.createdHandles.first().closeCount.get())
+            assertEquals(0, controller.diagnostics.value.proxyPort)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun testLiveProfileAndSelectedAppReconfiguration() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val tunProvider = FakeTunProvider()
+        val tunnelEngine = FakeTunnelEngine()
+        val confPath = File.createTempFile("hev-live-", ".yml").apply { deleteOnExit() }.absolutePath
+
+        val controller = VpnSessionController(
+            tunProvider = tunProvider,
+            socketProtector = allowAllProtector,
+            tunnelEngine = tunnelEngine,
+            configFilePath = confPath,
+            scope = scope,
+            startupVerifyDelayMs = 0L,
+            watchdogIntervalMs = 60_000L
+        )
+
+        try {
+            assertTrue(controller.start(setOf("com.whatsapp"), GlitchConfig.MILD).isSuccess)
+            assertEquals(GlitchProfileType.MILD, controller.activeProfile.value)
+
+            // Live profile update does not bounce TUN/tunnel
+            controller.updateConfig(GlitchConfig.SEVERE)
+            assertEquals(GlitchProfileType.SEVERE, controller.activeProfile.value)
+            assertEquals(1, tunProvider.createdHandles.size)
+            assertEquals(1, tunnelEngine.startCalls)
+
+            // Live app update rebuilds TUN and restarts Hev cleanly
+            val appUpdateRes = controller.updateSelectedApps(setOf("com.whatsapp", "org.telegram.messenger"))
+            assertTrue(appUpdateRes.isSuccess)
+            assertEquals(VpnLifecycleState.RUNNING, controller.diagnostics.value.vpnState)
+            assertEquals(2, tunProvider.createdHandles.size)
+            assertEquals(1, tunProvider.createdHandles[0].closeCount.get())
+            assertEquals(0, tunProvider.createdHandles[1].closeCount.get())
+
+            // Emptying apps stops VPN cleanly
+            assertTrue(controller.updateSelectedApps(emptySet()).isSuccess)
+            assertEquals(VpnLifecycleState.STOPPED, controller.diagnostics.value.vpnState)
+            assertEquals(1, tunProvider.createdHandles[1].closeCount.get())
+        } finally {
+            scope.cancel()
+        }
     }
 }
 `

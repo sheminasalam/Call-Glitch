@@ -31,7 +31,9 @@ jobs:
           test -f android/gradlew || { echo "Missing android/gradlew"; exit 1; }
           test -f android/gradle/wrapper/gradle-wrapper.jar || { echo "Missing android/gradle/wrapper/gradle-wrapper.jar"; exit 1; }
           test -f android/app/build.gradle.kts || { echo "Missing android/app/build.gradle.kts"; exit 1; }
-          echo "All core Android project files verified."
+          test -f android/app/libs/hev-socks5-tunnel-2.20.0.aar || { echo "Missing android/app/libs/hev-socks5-tunnel-2.20.0.aar"; exit 1; }
+          echo "ae8a2e96b80b4eccccd037805a4bb4a278090c89dbcae8bc6fcb7634e9a255b9  android/app/libs/hev-socks5-tunnel-2.20.0.aar" | sha256sum -c -
+          echo "All core Android project files and HevSocks5Tunnel AAR verified."
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

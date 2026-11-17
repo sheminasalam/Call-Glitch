@@ -1,8 +1,8 @@
 package com.callglitch.app.vpn
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service.STOP_FOREGROUND_REMOVE
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -18,8 +18,10 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.callglitch.app.CallGlitchApplication
 import com.callglitch.app.R
+import com.callglitch.app.model.DiagnosticsSnapshot
 import com.callglitch.app.model.GlitchConfig
 import com.callglitch.app.model.GlitchProfileType
+import com.callglitch.app.model.VpnLifecycleState
 import com.callglitch.app.tile.GlitchTileService
 import com.callglitch.app.ui.MainActivity
 import kotlinx.coroutines.*
@@ -27,17 +29,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
-class CallGlitchVpnService : VpnService() {
+class CallGlitchVpnService : VpnService(), TunInterfaceProvider {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var forwardingEngine: PacketForwardingEngine? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var timeoutJob: Job? = null
-    private var watchdogJob: Job? = null
-    private var startJob: Job? = null
+
+    private lateinit var sessionController: VpnSessionController
 
     companion object {
         private const val TAG = "CallGlitchVpnService"
@@ -59,6 +60,9 @@ class CallGlitchVpnService : VpnService() {
 
         private val _forwardedPackets = MutableStateFlow(0L)
         val forwardedPackets: StateFlow<Long> = _forwardedPackets.asStateFlow()
+
+        private val _diagnostics = MutableStateFlow(DiagnosticsSnapshot())
+        val diagnostics: StateFlow<DiagnosticsSnapshot> = _diagnostics.asStateFlow()
 
         private val _lastErrorMessage = MutableStateFlow<String?>(null)
         val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
@@ -89,6 +93,17 @@ class CallGlitchVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        val confPath = File(cacheDir, "hev-socks5-tunnel.yml").absolutePath
+        sessionController = VpnSessionController(
+            tunProvider = this,
+            socketProtector = VpnServiceSocketProtector(this),
+            tunnelEngine = HevTunnelEngine(),
+            configFilePath = confPath,
+            scope = serviceScope,
+            onStateChanged = { snapshot ->
+                onDiagnosticsUpdated(snapshot)
+            }
+        )
         registerNetworkCallback()
     }
 
@@ -96,7 +111,10 @@ class CallGlitchVpnService : VpnService() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop command received. Priority STOP teardown initiated.")
-                stopVpn()
+                serviceScope.launch {
+                    sessionController.stop()
+                    finishServiceShutdown()
+                }
                 return START_NOT_STICKY
             }
             ACTION_UPDATE_PROFILE -> {
@@ -109,7 +127,7 @@ class CallGlitchVpnService : VpnService() {
                             val repo = (application as CallGlitchApplication).settingsRepository
                             val custom = repo.customConfigFlow.first()
                             val config = GlitchConfig.forType(profile, custom)
-                            forwardingEngine?.updateConfig(config)
+                            sessionController.updateConfig(config)
                             updateNotification(profile)
                             GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
                         }
@@ -120,24 +138,20 @@ class CallGlitchVpnService : VpnService() {
                 return START_STICKY
             }
             ACTION_UPDATE_APPS -> {
-                if (_isRunning.value) {
-                    serviceScope.launch {
-                        try {
-                            val repo = (application as CallGlitchApplication).settingsRepository
-                            val selectedApps = repo.selectedPackagesFlow.first()
-                            if (selectedApps.isEmpty()) {
-                                Log.w(TAG, "All target applications deselected while active. Stopping VPN.")
-                                stopVpn()
-                                return@launch
-                            }
-                            val custom = repo.customConfigFlow.first()
-                            val config = GlitchConfig.forType(_activeProfile.value, custom)
-                            establishVpn(selectedApps, config)
-                            Log.i(TAG, "Re-established VPN TUN with updated apps: $selectedApps")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error updating apps on active VPN: ${e.message}", e)
-                            stopVpn()
+                serviceScope.launch {
+                    try {
+                        val repo = (application as CallGlitchApplication).settingsRepository
+                        val selectedApps = repo.selectedPackagesFlow.first()
+                        val result = sessionController.updateSelectedApps(selectedApps)
+                        if (selectedApps.isEmpty() || result.isFailure) {
+                            finishServiceShutdown()
+                        } else {
+                            Log.i(TAG, "Updated VPN allowed applications: $selectedApps")
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error updating apps on active VPN: ${e.message}", e)
+                        sessionController.stop()
+                        finishServiceShutdown()
                     }
                 }
                 return START_STICKY
@@ -150,11 +164,100 @@ class CallGlitchVpnService : VpnService() {
                 _activeProfile.value = profile
 
                 startForegroundSafely(profile)
-                startVpn(profile)
+                serviceScope.launch {
+                    val repo = (application as CallGlitchApplication).settingsRepository
+                    val selectedApps = repo.selectedPackagesFlow.first()
+                    val custom = repo.customConfigFlow.first()
+                    val config = GlitchConfig.forType(profile, custom)
+                    val timeoutSec = repo.autoTimeoutSecondsFlow.first()
+
+                    val result = sessionController.start(selectedApps, config, timeoutSec)
+                    if (result.isFailure) {
+                        Log.e(TAG, "Failed to start Call Glitch VPN: ${result.exceptionOrNull()?.message}")
+                        finishServiceShutdown()
+                    } else {
+                        _lastErrorMessage.value = null
+                        updateNotification(profile)
+                    }
+                }
                 return START_STICKY
             }
         }
         return START_NOT_STICKY
+    }
+
+    override fun establish(selectedApps: Set<String>, config: GlitchConfig): TunHandle {
+        if (selectedApps.isEmpty()) {
+            throw IllegalStateException("No target applications selected. Please select at least one application.")
+        }
+
+        var allowedCount = 0
+        val builder = Builder().apply {
+            setMtu(1500)
+            addAddress("10.240.0.1", 24)
+            addDnsServer("8.8.8.8")
+            addDnsServer("1.1.1.1")
+            addRoute("0.0.0.0", 0)
+            setSession("CallGlitch: ${config.profileType.displayName}")
+            // HevSocks5Tunnel uses non-blocking TUN I/O (ioctl FIONBIO).
+            setBlocking(false)
+
+            // Capture IPv6 default route and IPv6 DNS so dual-stack calling apps cannot bypass impairment.
+            try {
+                addAddress("fd00:ca11:911c::1", 64)
+                addDnsServer("2001:4860:4860::8888")
+                addRoute("::", 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 TUN route unavailable on this device, continuing with IPv4: ${e.message}")
+            }
+
+            // Route ONLY selected target applications (never Call Glitch itself).
+            val pm = packageManager
+            for (pkg in selectedApps) {
+                if (pkg == packageName) continue
+                try {
+                    pm.getPackageInfo(pkg, 0)
+                    addAllowedApplication(pkg)
+                    allowedCount++
+                } catch (_: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "Selected app not installed on device, skipping: $pkg")
+                }
+            }
+        }
+
+        if (allowedCount == 0) {
+            throw IllegalStateException(
+                "None of the selected applications (${selectedApps.joinToString()}) are currently installed on this device."
+            )
+        }
+
+        val pfd = builder.establish()
+            ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission is approved.")
+
+        Log.i(TAG, "Established VpnService TUN (fd=${pfd.fd}, allowedApps=$allowedCount)")
+        return ParcelTunHandle(pfd)
+    }
+
+    private fun onDiagnosticsUpdated(snapshot: DiagnosticsSnapshot) {
+        _diagnostics.value = snapshot
+        _forwardedPackets.value = snapshot.totalForwardedCount
+        _droppedPackets.value = snapshot.droppedUdpDatagrams
+
+        val nowRunning = snapshot.vpnState == VpnLifecycleState.RUNNING
+        val wasRunning = _isRunning.value
+        _isRunning.value = nowRunning
+
+        if (snapshot.lastError != null) {
+            val componentPrefix = snapshot.lastErrorComponent?.let { "[$it] " } ?: ""
+            _lastErrorMessage.value = "$componentPrefix${snapshot.lastError}"
+        }
+
+        if (wasRunning != nowRunning) {
+            GlitchTileService.requestTileUpdate(this)
+            if (!nowRunning && (snapshot.vpnState == VpnLifecycleState.STOPPED || snapshot.vpnState == VpnLifecycleState.FAILED)) {
+                finishServiceShutdown()
+            }
+        }
     }
 
     private fun startForegroundSafely(profile: GlitchProfileType) {
@@ -173,124 +276,8 @@ class CallGlitchVpnService : VpnService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed: ${e.message}", e)
-            try {
-                startForeground(NOTIFICATION_ID, notification)
-            } catch (ignored: Exception) {
-                Log.w(TAG, "Notification fallback omitted.")
-            }
+            runCatching { startForeground(NOTIFICATION_ID, notification) }
         }
-    }
-
-    private fun startVpn(profile: GlitchProfileType) {
-        startJob?.cancel()
-        startJob = serviceScope.launch {
-            try {
-                _forwardedPackets.value = 0L
-                _droppedPackets.value = 0L
-
-                val repo = (application as CallGlitchApplication).settingsRepository
-                val selectedApps = repo.selectedPackagesFlow.first()
-                if (selectedApps.isEmpty()) {
-                    val err = "No target applications selected. Please select at least one application."
-                    Log.e(TAG, err)
-                    _lastErrorMessage.value = err
-                    stopVpn()
-                    return@launch
-                }
-                val custom = repo.customConfigFlow.first()
-                val config = GlitchConfig.forType(profile, custom)
-                val timeoutSec = repo.autoTimeoutSecondsFlow.first()
-
-                establishVpn(selectedApps, config)
-                _isRunning.value = true
-                _lastErrorMessage.value = null
-                GlitchTileService.requestTileUpdate(this@CallGlitchVpnService)
-
-                // Schedule auto-timeout if configured
-                if (timeoutSec > 0) {
-                    timeoutJob?.cancel()
-                    timeoutJob = serviceScope.launch {
-                        delay(timeoutSec * 1000L)
-                        Log.i(TAG, "Auto-timeout of $timeoutSec seconds reached. Restoring normal network.")
-                        stopVpn()
-                    }
-                }
-
-                // Start watchdog for stalled forwarding
-                startWatchdog()
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start VPN: ${e.message}", e)
-                _lastErrorMessage.value = e.message ?: "Failed to establish VPN interface"
-                stopVpn()
-            }
-        }
-    }
-
-    private fun establishVpn(selectedApps: Set<String>, config: GlitchConfig) {
-        if (selectedApps.isEmpty()) {
-            throw IllegalStateException("No target applications selected. Please select at least one application.")
-        }
-        var allowedCount = 0
-        val builder = Builder().apply {
-            setMtu(1500)
-            addAddress("10.240.0.1", 24)
-            addDnsServer("8.8.8.8")
-            addDnsServer("1.1.1.1")
-            addRoute("0.0.0.0", 0)
-            setSession("CallGlitch: ${config.profileType.displayName}")
-            setBlocking(true)
-
-            // Capture IPv6 default route with a valid hexadecimal ULA address so dual-stack
-            // calling apps (WhatsApp, Telegram, Meet, Zoom) cannot bypass the VPN over IPv6.
-            try {
-                addAddress("fd00:ca11:911c::1", 64)
-                addRoute("::", 0)
-            } catch (e: Exception) {
-                Log.w(TAG, "IPv6 TUN route unavailable on this device, using IPv4 only: ${e.message}")
-            }
-
-            // CRITICAL: Route ONLY selected applications via addAllowedApplication()
-            val pm = packageManager
-            for (pkg in selectedApps) {
-                // Ensure we never route Call Glitch through its own VPN
-                if (pkg == packageName) continue
-
-                try {
-                    pm.getPackageInfo(pkg, 0)
-                    addAllowedApplication(pkg)
-                    allowedCount++
-                    Log.d(TAG, "Routing allowed application through CallGlitch TUN: $pkg")
-                } catch (e: PackageManager.NameNotFoundException) {
-                    Log.w(TAG, "Selected app not found on device, skipping: $pkg")
-                }
-            }
-        }
-
-        if (allowedCount == 0) {
-            throw IllegalStateException("None of the selected applications (${selectedApps.joinToString()}) are currently installed on this device.")
-        }
-
-        forwardingEngine?.stop()
-        forwardingEngine = null
-        vpnInterface?.close()
-        vpnInterface = null
-
-        val pfd = builder.establish() ?: throw IOException("VpnService.Builder.establish() returned null. Please verify VPN permission was approved.")
-        vpnInterface = pfd
-
-        // Initialize user-space forwarding engine with impairment
-        forwardingEngine = PacketForwardingEngine(
-            vpnService = this,
-            tunFd = pfd.fileDescriptor,
-            config = config,
-            onStatsUpdate = { forwarded, dropped ->
-                _forwardedPackets.value = forwarded
-                _droppedPackets.value = dropped
-            }
-        ).also { it.start() }
-
-        Log.i(TAG, "VPN TUN interface established successfully. Allowed apps: $allowedCount")
     }
 
     private fun registerNetworkCallback() {
@@ -302,34 +289,28 @@ class CallGlitchVpnService : VpnService() {
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Underlying physical network available: $network.")
-                forwardingEngine?.onUnderlyingNetworkChanged(network)
+                Log.d(TAG, "Underlying physical network available: $network")
+                serviceScope.launch {
+                    sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = true)
+                }
             }
 
             override fun onLost(network: Network) {
-                Log.d(TAG, "Underlying network lost: $network.")
+                Log.d(TAG, "Underlying physical network lost: $network")
+                serviceScope.launch {
+                    sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = false)
+                }
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                forwardingEngine?.onUnderlyingNetworkChanged(network)
-            }
-        }
-        cm.registerNetworkCallback(request, networkCallback!!)
-    }
-
-    private fun startWatchdog() {
-        watchdogJob?.cancel()
-        watchdogJob = serviceScope.launch {
-            while (isActive) {
-                delay(5000L)
-                val isAlive = forwardingEngine?.isHealthy() ?: false
-                if (!isAlive && _isRunning.value) {
-                    Log.e(TAG, "Watchdog detected stalled forwarding engine. Tearing down immediately to prevent blackholing.")
-                    stopVpn()
-                    break
+                if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    serviceScope.launch {
+                        sessionController.onUnderlyingNetworkChanged(hasValidatedNetwork = true)
+                    }
                 }
             }
         }
+        runCatching { cm.registerNetworkCallback(request, networkCallback!!) }
     }
 
     private fun buildNotification(profile: GlitchProfileType): Notification {
@@ -350,7 +331,7 @@ class CallGlitchVpnService : VpnService() {
         return NotificationCompat.Builder(this, CallGlitchApplication.CHANNEL_ID_VPN)
             .setSmallIcon(R.drawable.ic_glitch_notification)
             .setContentTitle("Call Glitch Active: ${profile.displayName}")
-            .setContentText("Impairing call network. Normal network will restore on STOP.")
+            .setContentText("Routing selected apps via HevSocks5Tunnel + local impairment proxy.")
             .setSubText("Call Glitch")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -360,46 +341,51 @@ class CallGlitchVpnService : VpnService() {
     }
 
     private fun updateNotification(profile: GlitchProfileType) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(profile))
     }
 
-    private fun stopVpn() {
+    private fun finishServiceShutdown() {
         _isRunning.value = false
-        startJob?.cancel()
-        timeoutJob?.cancel()
-        watchdogJob?.cancel()
-
-        try {
-            // STOP priority: Immediately shutdown forwarding engine without waiting for queued packets
-            forwardingEngine?.stop()
-            forwardingEngine = null
-
-            vpnInterface?.close()
-            vpnInterface = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing VPN interface: ${e.message}")
-        } finally {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            GlitchTileService.requestTileUpdate(this)
-            Log.i(TAG, "Call Glitch VPN stopped. Ordinary networking completely restored.")
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        GlitchTileService.requestTileUpdate(this)
     }
 
     override fun onRevoke() {
         Log.w(TAG, "VpnService.onRevoke() triggered by system. Failsafe shutdown.")
-        stopVpn()
+        serviceScope.launch {
+            sessionController.stop()
+            finishServiceShutdown()
+        }
         super.onRevoke()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopVpn()
+        runBlocking {
+            withTimeoutOrNull(3_000L) {
+                sessionController.stop()
+            }
+        }
         serviceScope.cancel()
         networkCallback?.let {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.unregisterNetworkCallback(it)
+            runCatching { cm.unregisterNetworkCallback(it) }
+        }
+        GlitchTileService.requestTileUpdate(this)
+    }
+
+    private class ParcelTunHandle(
+        private val pfd: ParcelFileDescriptor
+    ) : TunHandle {
+        private val closed = AtomicBoolean(false)
+        override val fd: Int get() = pfd.fd
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) {
+                pfd.close()
+            }
         }
     }
 }

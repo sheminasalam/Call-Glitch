@@ -174,8 +174,8 @@ export const CodeExplorer: React.FC = () => {
             <code className="text-emerald-300">adb install -r app-debug.apk</code>
           </div>
           <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-            <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">3. Grant System Overlay (Optional)</div>
-            <code className="text-amber-300">adb shell appops set com.callglitch.app SYSTEM_ALERT_WINDOW allow</code>
+            <div className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">3. Run Automated Unit Tests</div>
+            <code className="text-amber-300">./gradlew testDebugUnitTest</code>
           </div>
         </div>
       </div>

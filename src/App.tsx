@@ -390,7 +390,7 @@ export default function App() {
                     <span className="text-[11px] text-sky-500 font-medium">Browse →</span>
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Inspect VpnService.kt, PacketForwardingEngine.kt, TileService.kt, Compose screens, and download the full .ZIP project.
+                    Inspect CallGlitchVpnService.kt, VpnSessionController.kt, LocalSocks5ProxyServer.kt, TileService.kt, and download the full .ZIP project.
                   </p>
                 </div>
               </div>
@@ -414,7 +414,7 @@ export default function App() {
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p>Call Glitch · Rootless, Per-App Network Impairment Utility for Android (API 26–35)</p>
+          <p>Call Glitch · Rootless, Per-App Network Impairment Utility for Android (API 29–35)</p>
           <div className="flex items-center gap-4 font-mono text-[11px]">
             <span>VpnService</span>
             <span>·</span>

@@ -192,17 +192,24 @@ When the VPN was active, target applications previously had their internet conne
 
 ---
 
-## 3. Network Forwarding Engine: Current Limitations & Milestone 2 Plan
+## 3. Milestone 2 Completed: HevSocks5Tunnel + Local Loopback SOCKS5 Proxy Architecture
 
-### Identified Technical Limitations in Current Packet Router
-1. **TCP Stateful Connection Management:** The present loop does not implement full TCP state machines (SYN/ACK tracking, sequence/acknowledgment tracking, window scaling). TCP traffic cannot be transparently proxied over direct sockets without an intermediate user-space TCP stack.
-2. **Dual-Stack IPv6 Media Streams:** Calling apps (such as WhatsApp and Google Meet) increasingly use IPv6 UDP flows. Current direct sockets only support partial IPv4 NAT translation.
-3. **DNS Proxying & Signaling:** Calling apps require seamless DNS resolution (`addDnsServer`) during call setup.
+### Replaced Legacy Implementation
+- **Deleted:** `android/app/src/main/java/com/callglitch/app/vpn/PacketForwardingEngine.kt` (removed completely; no custom IP/TCP stack retained).
 
-### Next Implementation Milestone: Genuine Forwarding Engine
-- **Target:** Integrate an embedded user-space TCP/IP stack (such as `tun2socks` with embedded `lwIP` or a pure Kotlin user-space TCP/IP packet router) that binds to protected sockets (`VpnService.protect()`).
-- **Milestone 2 Workflow:**
-  1. Establish normal TCP and UDP forwarding through the user-space stack with impairment parameters set to 0.
-  2. Validate real internet browsing and WhatsApp voice call connectivity through the tunnel.
-  3. Wire the bounded delay queue and statistical loss filter into the user-space packet handler.
-  4. Perform physical-device in-call validation using the Quick Settings tile.
+### New Reliable Pipeline
+**Selected Apps → Android `VpnService` (IPv4 + IPv6 + DNS, `setBlocking(false)`) → `HevSocks5Tunnel` (`v2.20.0`, `hev.htproxy.TProxyService`) → `LocalSocks5ProxyServer` (`127.0.0.1:0`) → `ImpairmentController` → `VpnService.protect()` → Internet**
+
+- **Pinned Native Dependency:** `heiher/hev-socks5-tunnel` **v2.20.0** (`android/app/libs/hev-socks5-tunnel-2.20.0.aar`, MIT License, ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`, 16 KB page-size aligned). Minimum SDK aligned to **29** (Android 10) to match upstream `APP_PLATFORM := android-29`.
+- **Serialized Lifecycle (`VpnSessionController.kt`):**
+  - `Mutex`-serialized state transitions (`STOPPED → STARTING → RUNNING → RECONFIGURING → STOPPING → FAILED`).
+  - Strict TUN FD ownership matching upstream `hev-socks5-tunnel.c` (`tunnel_fini`): `TProxyStopService()` joins the native worker first, and the `ParcelFileDescriptor` is closed once afterward.
+  - Partial startup rollback & unexpected native worker termination detection to avoid blackholed connections.
+- **Local Loopback SOCKS5 Proxy (`LocalSocks5ProxyServer.kt`) & Impairment (`ImpairmentController.kt`):**
+  - Loopback-only (`127.0.0.1:0`), RFC 1928 `NO AUTH`, `CONNECT` (TCP), `UDP ASSOCIATE` (UDP), IPv4 (`0x01`), Domain (`0x03`), IPv6 (`0x04`).
+  - Strict `SocketProtector.protect()` verification before `connect()`/`send()`; aborts session immediately if `protect()` returns `false`.
+  - Complete-datagram UDP impairment (loss %, burst loss + recovery, latency, jitter, bounded queues, DNS port 53 exempt).
+  - Non-corrupting TCP stream impairment (`affectTcp = true` by default on presets): latency, jitter, bandwidth pacing (`tcpBandwidthKbps`), temporary pauses during burst cuts, bounded backpressure channels.
+- **Truthful Diagnostics & UI Preservation:**
+  - `DiagnosticsSnapshot` exposes VPN, Hev tunnel, and SOCKS5 proxy health, active TCP/UDP sessions, separated UDP forwarded/dropped counts, TCP bytes/delayed writes, and component-attributed error messages while preserving the existing Compose UI and Quick Settings tile UX.
+

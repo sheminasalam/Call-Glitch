@@ -97,39 +97,39 @@ export const ArchitectureView: React.FC = () => {
             <ArrowDown className="w-4 h-4 text-amber-400" />
           </div>
 
-          {/* Layer 4: Network Impairment Engine */}
+          {/* Layer 4: HevSocks5Tunnel */}
           <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-700/60 flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-xs">
-                  GLITCH
+                  HEV
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-amber-300">Network Impairment Engine</h4>
-                  <p className="text-[11px] text-slate-400 font-mono">Bounded Priority Queue (500 pkts) · Flow-Isolated</p>
+                  <h4 className="text-xs font-bold text-amber-300">HevSocks5Tunnel (tun2socks + lwIP)</h4>
+                  <p className="text-[11px] text-slate-400 font-mono">hev-socks5-tunnel v2.20.0 · IPv4 + IPv6 TCP/UDP → 127.0.0.1</p>
                 </div>
               </div>
               <span className="text-[10px] font-mono text-amber-300 bg-amber-900/60 px-2 py-0.5 rounded">
-                Active Traffic Shaper
+                Native JNI Core
               </span>
             </div>
 
             <div className="grid grid-cols-4 gap-2 pt-2 border-t border-amber-900/40 text-center text-[10px] font-mono">
               <div className="p-1.5 rounded bg-slate-900 border border-slate-800">
                 <div className="text-slate-400">DELAY</div>
-                <div className="text-amber-400 font-bold">120 - 350ms</div>
+                <div className="text-amber-400 font-bold">0 - 3000ms</div>
               </div>
               <div className="p-1.5 rounded bg-slate-900 border border-slate-800">
                 <div className="text-slate-400">JITTER</div>
-                <div className="text-amber-400 font-bold">±30 - 160ms</div>
+                <div className="text-amber-400 font-bold">±0 - 1500ms</div>
               </div>
               <div className="p-1.5 rounded bg-slate-900 border border-slate-800">
-                <div className="text-slate-400">LOSS</div>
-                <div className="text-amber-400 font-bold">1 - 7% UDP</div>
+                <div className="text-slate-400">UDP LOSS</div>
+                <div className="text-amber-400 font-bold">0 - 95% + Burst</div>
               </div>
               <div className="p-1.5 rounded bg-slate-900 border border-slate-800">
-                <div className="text-slate-400">BURST</div>
-                <div className="text-amber-400 font-bold">Optional 800ms</div>
+                <div className="text-slate-400">TCP PACE</div>
+                <div className="text-amber-400 font-bold">Safe Stream Cap</div>
               </div>
             </div>
           </div>
@@ -138,15 +138,15 @@ export const ArchitectureView: React.FC = () => {
             <ArrowDown className="w-4 h-4 text-purple-400" />
           </div>
 
-          {/* Layer 5: Protected Forwarding Engine */}
+          {/* Layer 5: Local SOCKS5 Impairment Proxy */}
           <div className="p-4 rounded-xl bg-purple-950/30 border border-purple-800/50 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold text-xs">
-                SOCK
+                S5
               </div>
               <div>
-                <h4 className="text-xs font-bold text-purple-200">User-Space TCP/UDP Forwarding Engine</h4>
-                <p className="text-[11px] text-slate-400 font-mono">DatagramSocket · protect(socket) eliminates routing loop</p>
+                <h4 className="text-xs font-bold text-purple-200">Local Loopback SOCKS5 Impairment Proxy</h4>
+                <p className="text-[11px] text-slate-400 font-mono">127.0.0.1:0 · CONNECT &amp; UDP ASSOCIATE · Strict protect() check</p>
               </div>
             </div>
             <span className="text-[10px] font-mono text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded">
@@ -168,7 +168,7 @@ export const ArchitectureView: React.FC = () => {
               </div>
             </div>
             <span className="text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded">
-              Remote WhatsApp/Media Server
+              Remote Media / Call Server
             </span>
           </div>
         </div>
